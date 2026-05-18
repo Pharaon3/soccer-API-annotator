@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Soccer Video Annotator</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div id="role-screen" class="screen active">
+    <div class="card role-card">
+      <h1>Soccer Annotator</h1>
+      <p class="subtitle">Choose your role to continue</p>
+      <div class="role-buttons">
+        <button type="button" id="btn-annotator" class="role-btn primary">Annotator</button>
+        <button type="button" id="btn-reviewer" class="role-btn secondary">Reviewer</button>
+      </div>
+      <p id="role-status" class="status-text"></p>
+    </div>
+  </div>
+
+  <div id="annotator-screen" class="screen">
+    <header class="top-bar">
+      <div class="meta">
+        <span class="badge" id="annotator-badge">Annotator</span>
+        <span id="session-info"></span>
+        <span id="job-info"></span>
+        <button type="button" id="btn-switch-role-annotator" class="small-btn switch-role-btn">Switch role</button>
+      </div>
+      <div id="label-buttons" class="label-grid"></div>
+    </header>
+
+    <div class="annotator-layout">
+      <div class="annotator-main">
+    <main class="video-wrap">
+      <video id="annotator-video" controls playsinline preload="auto"></video>
+      <div id="event-overlay" class="event-overlay hidden"></div>
+      <div class="video-controller">
+        <button type="button" id="btn-play-pause" class="ctrl-btn" title="Play / Pause (Space)">▶</button>
+        <span id="video-time-display" class="time-display">0:00.00</span>
+        <span id="video-frame-display" class="frame-display">frame 0</span>
+        <span class="controller-hint">Space — play / pause</span>
+      </div>
+    </main>
+
+      </div>
+
+      <aside class="events-sidebar">
+        <section class="events-panel">
+          <h2>Events this session</h2>
+          <ul id="events-list"></ul>
+        </section>
+      </aside>
+    </div>
+  </div>
+
+  <div id="reviewer-screen" class="screen">
+    <header class="top-bar reviewer-bar">
+      <h1>Review annotations</h1>
+      <div class="reviewer-actions">
+        <button type="button" id="btn-refresh-videos" class="small-btn">Refresh</button>
+        <button type="button" id="btn-switch-role-reviewer" class="small-btn switch-role-btn">Switch role</button>
+      </div>
+    </header>
+    <div class="reviewer-layout">
+      <aside class="video-list-panel">
+        <h2>Saved videos</h2>
+        <ul id="video-list"></ul>
+      </aside>
+      <section class="reviewer-main">
+        <video id="reviewer-video" controls playsinline></video>
+        <div id="reviewer-meta" class="reviewer-meta"></div>
+        <h3>Annotations</h3>
+        <ul id="reviewer-events"></ul>
+      </section>
+    </div>
+  </div>
+
+  <div id="role-picker-modal" class="modal hidden">
+    <div class="modal-card">
+      <h2>Switch role</h2>
+      <p class="subtitle">Choose a new role</p>
+      <div class="role-buttons">
+        <button type="button" id="modal-btn-annotator" class="role-btn primary">Annotator</button>
+        <button type="button" id="modal-btn-reviewer" class="role-btn secondary">Reviewer</button>
+      </div>
+      <button type="button" id="modal-btn-cancel" class="small-btn modal-cancel">Cancel</button>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
