@@ -6,16 +6,19 @@ import asyncio
 import hashlib
 import json
 import logging
+import random
 import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 import httpx
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl
+
+import auth as auth_store
+from auth import init_db, verify_api_key
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -48,7 +51,8 @@ LABELS = [
 ]
 
 ANNOTATE_DURATION_SEC = 22
-CACHE_DELAY_SEC = 15
+CACHE_DELAY_MIN_SEC = 10
+CACHE_DELAY_MAX_SEC = 15
 SEGMENT_WINDOW_SEC = 30
 RESPONSE_TIMEOUT_SEC = 22
 
@@ -83,10 +87,21 @@ class AnnotateRequest(BaseModel):
     video_url: HttpUrl
 
 
+class SignupRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=64)
+    password: str = Field(min_length=6, max_length=128)
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
 class ConnectionManager:
     def __init__(self) -> None:
-        self.annotators: dict[str, AnnotatorSession] = {}
+        self.annotators: dict[int, AnnotatorSession] = {}
         self.reviewers: set[WebSocket] = set()
+        self.admins: set[WebSocket] = set()
         self._next_annotator_id = 0
 
     @property
@@ -110,8 +125,33 @@ class ConnectionManager:
         for aid in to_remove:
             del self.annotators[aid]
         self.reviewers.discard(ws)
+        self.admins.discard(ws)
         if to_remove:
             await self._broadcast_annotator_count()
+
+    def register_admin(self, ws: WebSocket) -> None:
+        self.admins.add(ws)
+
+    async def notify_signup_pending(self, user: dict[str, Any]) -> None:
+        msg = json.dumps({"type": "signup_pending", "user": user})
+        dead: set[WebSocket] = set()
+        for ws in self.admins:
+            try:
+                await ws.send_text(msg)
+            except Exception:
+                dead.add(ws)
+        self.admins -= dead
+
+    async def notify_pending_list_changed(self) -> None:
+        pending = auth_store.list_pending_users()
+        msg = json.dumps({"type": "pending_list", "users": pending})
+        dead: set[WebSocket] = set()
+        for ws in self.admins:
+            try:
+                await ws.send_text(msg)
+            except Exception:
+                dead.add(ws)
+        self.admins -= dead
 
     async def _broadcast_annotator_count(self) -> None:
         count = self.annotator_count
@@ -164,6 +204,19 @@ class ConnectionManager:
         for aid in dead:
             del self.annotators[aid]
 
+        alert = {
+            **payload_base,
+            "duration_sec": ANNOTATE_DURATION_SEC,
+            "needs_role_switch": True,
+        }
+        dead_reviewers: set[WebSocket] = set()
+        for ws in list(self.reviewers):
+            try:
+                await ws.send_text(json.dumps(alert))
+            except Exception:
+                dead_reviewers.add(ws)
+        self.reviewers -= dead_reviewers
+
     async def notify_reviewers_video_saved(self, video_key: str) -> None:
         msg = json.dumps({"type": "videos_updated"})
         dead: set[WebSocket] = set()
@@ -179,7 +232,31 @@ manager = ConnectionManager()
 active_jobs: dict[str, ActiveJob] = {}
 job_events: dict[str, list[dict[str, Any]]] = {}
 
+init_db()
+
 app = FastAPI(title="Soccer Annotator API")
+
+
+def _bearer_token(authorization: str | None = Header(None)) -> str | None:
+    if authorization and authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return None
+
+
+def require_user(authorization: str | None = Header(None)) -> dict[str, Any]:
+    token = _bearer_token(authorization)
+    session = auth_store.get_session(token or "")
+    if session is None or session["is_admin"]:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return session
+
+
+def require_admin(authorization: str | None = Header(None)) -> dict[str, Any]:
+    token = _bearer_token(authorization)
+    session = auth_store.get_session(token or "")
+    if session is None or not session["is_admin"]:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return session
 
 
 def cache_paths(video_key: str) -> tuple[Path, Path, Path]:
@@ -273,12 +350,111 @@ async def _ensure_video_downloaded(video_url: str, video_path: Path) -> None:
     await download_video(video_url, video_path)
 
 
+@app.post("/api/auth/signup")
+async def signup(body: SignupRequest) -> JSONResponse:
+    try:
+        user = auth_store.create_user(body.username, body.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await manager.notify_signup_pending(user)
+    return JSONResponse(
+        content={
+            "message": "Signup received. Wait for admin approval before logging in.",
+            "username": user["username"],
+            "status": user["status"],
+        }
+    )
+
+
+@app.post("/api/auth/login")
+async def login(body: LoginRequest) -> JSONResponse:
+    try:
+        token, profile = auth_store.login_user(body.username, body.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    return JSONResponse(content={"token": token, "user": profile})
+
+
+async def _admin_login_handler(body: LoginRequest) -> JSONResponse:
+    try:
+        token, profile = auth_store.login_admin(body.username, body.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    return JSONResponse(content={"token": token, "user": profile})
+
+
+@app.post("/api/auth/admin/login")
+@app.post("/api/auth/admin/login/")
+@app.post("/api/admin/login")
+async def admin_login(body: LoginRequest) -> JSONResponse:
+    return await _admin_login_handler(body)
+
+
+@app.post("/api/auth/logout")
+async def logout(authorization: str | None = Header(None)) -> JSONResponse:
+    token = _bearer_token(authorization)
+    if token:
+        auth_store.delete_session(token)
+    return JSONResponse(content={"ok": True})
+
+
+@app.get("/api/auth/me")
+async def me(session: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
+    user = auth_store.get_user_by_id(session["user_id"])
+    return {
+        "username": session["username"],
+        "is_admin": False,
+        "status": user["status"] if user else "approved",
+    }
+
+
+@app.get("/api/auth/admin/me")
+async def admin_me(session: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
+    return {"username": session["username"], "is_admin": True}
+
+
+@app.get("/api/admin/pending")
+async def admin_pending(
+    _session: dict[str, Any] = Depends(require_admin),
+) -> list[dict[str, Any]]:
+    return auth_store.list_pending_users()
+
+
+@app.post("/api/admin/users/{user_id}/approve")
+async def approve_user(
+    user_id: int, _session: dict[str, Any] = Depends(require_admin)
+) -> JSONResponse:
+    user = auth_store.set_user_status(user_id, "approved")
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    await manager.notify_pending_list_changed()
+    return JSONResponse(content=user)
+
+
+@app.post("/api/admin/users/{user_id}/reject")
+async def reject_user(
+    user_id: int, _session: dict[str, Any] = Depends(require_admin)
+) -> JSONResponse:
+    user = auth_store.set_user_status(user_id, "rejected")
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    await manager.notify_pending_list_changed()
+    return JSONResponse(content=user)
+
+
 @app.post("/api/annotate")
-async def annotate(body: AnnotateRequest) -> JSONResponse:
+async def annotate(
+    body: AnnotateRequest,
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
+) -> JSONResponse:
+    if not verify_api_key(x_api_key):
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
     video_url = str(body.video_url)
     cached = load_cached(video_url)
     if cached is not None:
-        await asyncio.sleep(CACHE_DELAY_SEC)
+        delay = random.uniform(CACHE_DELAY_MIN_SEC, CACHE_DELAY_MAX_SEC)
+        logger.info("Cached video %s — responding in %.2fs", video_url, delay)
+        await asyncio.sleep(delay)
         return JSONResponse(content=cached)
 
     if manager.annotator_count == 0:
@@ -297,7 +473,9 @@ async def annotate(body: AnnotateRequest) -> JSONResponse:
 
 
 @app.get("/api/videos")
-async def list_videos() -> list[dict[str, Any]]:
+async def list_videos(
+    _session: dict[str, Any] = Depends(require_user),
+) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for meta_file in sorted(ANNOTATIONS_DIR.glob("*.meta.json")):
         meta = json.loads(meta_file.read_text(encoding="utf-8"))
@@ -344,6 +522,7 @@ async def get_labels() -> list[str]:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    session: dict[str, Any] | None = None
     role: str | None = None
     annotator_session: AnnotatorSession | None = None
 
@@ -353,7 +532,52 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             data = json.loads(raw)
             msg_type = data.get("type")
 
+            if msg_type == "auth":
+                token = data.get("token", "")
+                session = auth_store.get_session(token)
+                if session is None:
+                    await websocket.send_text(
+                        json.dumps({"type": "auth_error", "detail": "Invalid session"})
+                    )
+                    continue
+                if session["is_admin"]:
+                    manager.register_admin(websocket)
+                    pending = auth_store.list_pending_users()
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "auth_ok",
+                                "user": {
+                                    "username": session["username"],
+                                    "is_admin": True,
+                                },
+                                "pending_users": pending,
+                            }
+                        )
+                    )
+                else:
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "auth_ok",
+                                "user": {
+                                    "username": session["username"],
+                                    "is_admin": False,
+                                },
+                            }
+                        )
+                    )
+                continue
+
+            if session is None:
+                await websocket.send_text(
+                    json.dumps({"type": "auth_required"})
+                )
+                continue
+
             if msg_type == "set_role":
+                if session["is_admin"]:
+                    continue
                 new_role = data.get("role")
                 if role is not None:
                     await manager.leave_role(websocket)
@@ -385,6 +609,33 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     )
                 continue
 
+            if msg_type == "admin_pending" and session["is_admin"]:
+                pending = auth_store.list_pending_users()
+                await websocket.send_text(
+                    json.dumps({"type": "pending_list", "users": pending})
+                )
+                continue
+
+            if msg_type == "admin_approve" and session["is_admin"]:
+                uid = int(data.get("user_id", 0))
+                user = auth_store.set_user_status(uid, "approved")
+                if user:
+                    await manager.notify_pending_list_changed()
+                    await websocket.send_text(
+                        json.dumps({"type": "user_approved", "user": user})
+                    )
+                continue
+
+            if msg_type == "admin_reject" and session["is_admin"]:
+                uid = int(data.get("user_id", 0))
+                user = auth_store.set_user_status(uid, "rejected")
+                if user:
+                    await manager.notify_pending_list_changed()
+                    await websocket.send_text(
+                        json.dumps({"type": "user_rejected", "user": user})
+                    )
+                continue
+
             if msg_type == "annotation" and role == "annotator":
                 job_id = data.get("job_id")
                 label = data.get("label")
@@ -412,8 +663,29 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         await manager.unregister(websocket)
 
 
-if STATIC_DIR.is_dir():
-    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+def _static_file(name: str) -> FileResponse:
+    path = STATIC_DIR / name
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Not found")
+    media = "text/css" if name.endswith(".css") else "application/javascript"
+    if name.endswith(".html"):
+        media = "text/html"
+    return FileResponse(path, media_type=media)
+
+
+@app.get("/")
+async def serve_index() -> FileResponse:
+    return _static_file("index.html")
+
+
+@app.get("/app.js")
+async def serve_app_js() -> FileResponse:
+    return _static_file("app.js")
+
+
+@app.get("/styles.css")
+async def serve_styles() -> FileResponse:
+    return _static_file("styles.css")
 
 
 if __name__ == "__main__":
