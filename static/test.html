@@ -12,7 +12,7 @@
       <div class="annotator-main">
         <main class="video-wrap">
           <div class="video-aspect">
-            <video id="annotator-video" controls playsinline preload="metadata"></video>
+            <video id="annotator-video" playsinline preload="auto"></video>
             <div id="api-countdown" class="api-countdown video-countdown hidden" aria-live="polite">
               <span id="countdown-value" class="countdown-value">—</span>
               <span class="countdown-unit">s</span>
@@ -22,10 +22,13 @@
           </div>
           <div class="annotator-bottom">
             <div class="video-controller">
-            <button type="button" id="btn-play-pause" class="ctrl-btn" title="Play / Pause (Space)">▶</button>
+            <button type="button" id="btn-play-pause" class="ctrl-btn" title="Play / Pause">▶</button>
             <span id="video-time-display" class="time-display">0:00.00</span>
             <span id="video-frame-display" class="frame-display">frame 0</span>
-            <span class="controller-hint">Space — play / pause · results are not saved</span>
+              <div class="video-timeline" id="video-timeline">
+                <input type="range" id="video-seek" class="video-seek" min="0" max="0" step="0.01" value="0" />
+                <div id="timeline-markers" class="timeline-markers"></div>
+              </div>
             </div>
             <div id="label-buttons" class="label-grid"></div>
           </div>

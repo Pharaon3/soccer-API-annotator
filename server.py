@@ -258,6 +258,17 @@ class ConnectionManager:
         x = max(total if total is not None else self.annotator_count, 1)
         return SEGMENT_WINDOW_SEC / x * (annotator_index - 1)
 
+    def segment_end_for(self, annotator_index: int, total: int | None = None) -> float:
+        x = max(total if total is not None else self.annotator_count, 1)
+        return self.start_offset_for(annotator_index, total) + SEGMENT_WINDOW_SEC / x
+
+    def segment_bounds(
+        self, annotator_index: int, total: int | None = None
+    ) -> tuple[float, float]:
+        start = self.start_offset_for(annotator_index, total)
+        end = self.segment_end_for(annotator_index, total)
+        return start, end
+
     async def broadcast_annotate_job(
         self, job: ActiveJob, serve_url: str
     ) -> None:
@@ -273,12 +284,15 @@ class ConnectionManager:
             self.participants.values(), key=lambda s: s.annotator_id
         )
         for rank, session in enumerate(sorted_sessions, start=1):
-            start_offset = self.start_offset_for(rank, total=x)
+            start_offset, segment_end = self.segment_bounds(rank, total=x)
             payload = {
                 **payload_base,
+                "annotator_id": session.annotator_id,
                 "annotator_index": rank,
                 "annotator_total": x,
                 "start_offset_sec": start_offset,
+                "segment_end_sec": segment_end,
+                "segment_window_sec": SEGMENT_WINDOW_SEC,
                 "duration_sec": ANNOTATE_DURATION_SEC,
             }
             try:
@@ -287,6 +301,40 @@ class ConnectionManager:
                 dead.append(session.annotator_id)
         for aid in dead:
             await self._drop_participant(aid)
+
+    async def send_active_annotate_job(self, session: AnnotatorSession) -> None:
+        """Re-send in-progress job after reconnect (e.g. test page → annotator)."""
+        if not active_jobs:
+            return
+        job_id, job = max(active_jobs.items(), key=lambda item: item[1].started_at)
+        x = max(self.annotator_count, 1)
+        rank = self.rank_of_participant(session.annotator_id)
+        start_offset, segment_end = self.segment_bounds(rank, total=x)
+        payload = {
+            "type": "annotate_start",
+            "job_id": job_id,
+            "video_url": job.video_url,
+            "original_url": job.video_url,
+            "annotator_id": session.annotator_id,
+            "annotator_index": rank,
+            "annotator_total": x,
+            "start_offset_sec": start_offset,
+            "segment_end_sec": segment_end,
+            "segment_window_sec": SEGMENT_WINDOW_SEC,
+            "duration_sec": ANNOTATE_DURATION_SEC,
+        }
+        await session.websocket.send_text(json.dumps(payload))
+        for event in job_events.get(job_id, []):
+            await session.websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "job_event",
+                        "job_id": job_id,
+                        "action": "add",
+                        "event": event,
+                    }
+                )
+            )
 
     async def broadcast_test_job(
         self, job_id: str, video_key: str, video_url: str
@@ -305,12 +353,14 @@ class ConnectionManager:
             self.test_annotators.values(), key=lambda s: s.annotator_id
         )
         for rank, session in enumerate(sorted_sessions, start=1):
-            start_offset = self.start_offset_for(rank, total=x)
+            start_offset, segment_end = self.segment_bounds(rank, total=x)
             payload = {
                 **payload_base,
                 "annotator_index": rank,
                 "annotator_total": x,
                 "start_offset_sec": start_offset,
+                "segment_end_sec": segment_end,
+                "segment_window_sec": SEGMENT_WINDOW_SEC,
             }
             try:
                 await session.websocket.send_text(json.dumps(payload))
@@ -318,6 +368,40 @@ class ConnectionManager:
                 dead.append(session.annotator_id)
         for aid in dead:
             del self.test_annotators[aid]
+
+    async def broadcast_job_event(
+        self,
+        job_id: str,
+        event: dict[str, Any],
+        action: str,
+        *,
+        test_only: bool = False,
+    ) -> None:
+        msg = json.dumps(
+            {
+                "type": "job_event",
+                "job_id": job_id,
+                "action": action,
+                "event": event,
+            }
+        )
+        targets = (
+            self.test_annotators.values()
+            if test_only
+            else self.participants.values()
+        )
+        dead: list[int] = []
+        for session in targets:
+            try:
+                await session.websocket.send_text(msg)
+            except Exception:
+                dead.append(session.annotator_id)
+        if test_only:
+            for aid in dead:
+                del self.test_annotators[aid]
+        else:
+            for aid in dead:
+                await self._drop_participant(aid)
 
     async def notify_reviewers_video_saved(self, video_key: str) -> None:
         msg = json.dumps({"type": "videos_updated"})
@@ -624,6 +708,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     annotator_session = await manager.register_annotator(websocket)
                     rank = manager.rank_of_participant(annotator_session.annotator_id)
                     x = manager.annotator_count
+                    seg_start, seg_end = manager.segment_bounds(rank, total=x)
                     await websocket.send_text(
                         json.dumps(
                             {
@@ -632,12 +717,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                                 "annotator_id": annotator_session.annotator_id,
                                 "annotator_index": rank,
                                 "annotator_total": x,
-                                "start_offset_sec": manager.start_offset_for(
-                                    rank, total=x
-                                ),
+                                "start_offset_sec": seg_start,
+                                "segment_end_sec": seg_end,
+                                "segment_window_sec": SEGMENT_WINDOW_SEC,
                             }
                         )
                     )
+                    await manager.send_active_annotate_job(annotator_session)
                 elif role == "reviewer":
                     reviewer_session = await manager.register_reviewer(websocket)
                     rank = manager.rank_of_participant(reviewer_session.annotator_id)
@@ -662,6 +748,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     annotator_session = await manager.register_test_annotator(websocket)
                     rank = manager.rank_of_participant(annotator_session.annotator_id)
                     x = manager.annotator_count
+                    seg_start, seg_end = manager.segment_bounds(rank, total=x)
                     await websocket.send_text(
                         json.dumps(
                             {
@@ -670,9 +757,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                                 "annotator_id": annotator_session.annotator_id,
                                 "annotator_index": rank,
                                 "annotator_total": x,
-                                "start_offset_sec": manager.start_offset_for(
-                                    rank, total=x
-                                ),
+                                "start_offset_sec": seg_start,
+                                "segment_end_sec": seg_end,
+                                "segment_window_sec": SEGMENT_WINDOW_SEC,
                             }
                         )
                     )
@@ -687,8 +774,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     continue
                 if job_id not in active_test_jobs:
                     continue
-                event = {"time_sec": round(float(time_sec), 2), "label": label}
+                pid = annotator_session.annotator_id if annotator_session else 0
+                event = {
+                    "time_sec": round(float(time_sec), 2),
+                    "label": label,
+                    "participant_id": pid,
+                    "uid": f"p{pid}-{round(float(time_sec), 2)}-{label}",
+                }
                 test_job_events.setdefault(job_id, []).append(event)
+                await manager.broadcast_job_event(
+                    job_id, event, "add", test_only=True
+                )
                 continue
 
             if msg_type == "annotation" and role in ("annotator", "reviewer"):
@@ -699,24 +795,44 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     continue
                 if job_id not in job_events:
                     continue
-                event = {"time_sec": round(float(time_sec), 2), "label": label}
+                pid = annotator_session.annotator_id if annotator_session else 0
+                event = {
+                    "time_sec": round(float(time_sec), 2),
+                    "label": label,
+                    "participant_id": pid,
+                    "uid": f"p{pid}-{round(float(time_sec), 2)}-{label}",
+                }
                 job_events[job_id].append(event)
                 if job_id in active_jobs:
                     async with active_jobs[job_id].lock:
                         active_jobs[job_id].events.append(event)
+                await manager.broadcast_job_event(job_id, event, "add")
                 continue
 
             if msg_type == "annotation_remove" and role in ("annotator", "test", "reviewer"):
                 job_id = data.get("job_id")
                 label = data.get("label")
                 time_sec = data.get("time_sec")
+                uid = data.get("uid")
                 if label not in LABELS or not job_id:
                     continue
+                pid = annotator_session.annotator_id if annotator_session else 0
                 if role == "test":
                     if job_id in test_job_events:
                         _remove_annotation_event(
                             test_job_events[job_id], time_sec, label
                         )
+                    await manager.broadcast_job_event(
+                        job_id,
+                        {
+                            "time_sec": round(float(time_sec), 2),
+                            "label": label,
+                            "participant_id": pid,
+                            "uid": uid,
+                        },
+                        "remove",
+                        test_only=True,
+                    )
                 elif job_id in job_events:
                     _remove_annotation_event(job_events[job_id], time_sec, label)
                     if job_id in active_jobs:
@@ -724,6 +840,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             _remove_annotation_event(
                                 active_jobs[job_id].events, time_sec, label
                             )
+                    await manager.broadcast_job_event(
+                        job_id,
+                        {
+                            "time_sec": round(float(time_sec), 2),
+                            "label": label,
+                            "participant_id": pid,
+                            "uid": uid,
+                        },
+                        "remove",
+                    )
                 continue
 
             if msg_type == "list_videos" and role == "reviewer":
