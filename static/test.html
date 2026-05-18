@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Soccer Annotator — Practice Test</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="page-test" data-page="test">
+  <div id="annotator-screen" class="screen active">
+    <div class="annotator-layout">
+      <div class="annotator-main">
+        <main class="video-wrap">
+          <div class="video-aspect">
+            <video id="annotator-video" controls playsinline preload="metadata"></video>
+            <div id="api-countdown" class="api-countdown video-countdown hidden" aria-live="polite">
+              <span id="countdown-value" class="countdown-value">—</span>
+              <span class="countdown-unit">s</span>
+            </div>
+            <div id="video-ready" class="video-ready hidden">READY</div>
+            <div id="event-overlay" class="event-overlay hidden"></div>
+          </div>
+          <div class="annotator-bottom">
+            <div class="video-controller">
+            <button type="button" id="btn-play-pause" class="ctrl-btn" title="Play / Pause (Space)">▶</button>
+            <span id="video-time-display" class="time-display">0:00.00</span>
+            <span id="video-frame-display" class="frame-display">frame 0</span>
+            <span class="controller-hint">Space — play / pause · results are not saved</span>
+            </div>
+            <div id="label-buttons" class="label-grid"></div>
+          </div>
+        </main>
+      </div>
+
+      <aside class="events-sidebar">
+        <section class="events-panel">
+          <div class="sidebar-toolbar">
+            <a href="/app" class="small-btn nav-link">Annotation</a>
+            <button type="button" id="btn-logout" class="small-btn">Log out</button>
+            <div id="test-next-countdown" class="api-countdown test-next-countdown hidden" aria-live="polite">
+              <span id="test-next-value" class="countdown-value">—</span>
+              <span class="countdown-unit">s</span>
+              <span class="countdown-hint">next test</span>
+            </div>
+          </div>
+          <h2>Events this round</h2>
+          <ul id="events-list"></ul>
+        </section>
+        <span id="session-info" class="sr-only"></span>
+        <span id="job-info" class="sr-only"></span>
+      </aside>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

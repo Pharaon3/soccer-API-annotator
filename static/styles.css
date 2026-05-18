@@ -23,6 +23,54 @@ body {
   min-height: 100vh;
 }
 
+/* Real annotation — cool blue-gray */
+body.page-annotate {
+  --bg: #0f1419;
+  --surface: #1a2332;
+  --surface2: #243044;
+  background: var(--bg);
+}
+
+body.page-annotate .events-sidebar {
+  background: var(--surface);
+  border-left-color: #2a3a52;
+}
+
+body.page-annotate .video-controller {
+  background: var(--surface);
+  border-color: #2a3a52;
+}
+
+/* Practice test — subtle purple tint */
+body.page-test {
+  --bg: #14121c;
+  --surface: #1e1e1e;
+  --surface2: #2a2540;
+  background: linear-gradient(165deg, #1a1628 0%, #14121c 45%, #100e18 100%);
+}
+
+body.page-test .events-sidebar {
+  background: var(--surface);
+  border-left-color: #3d3558;
+}
+
+body.page-test .video-controller {
+  background: var(--surface);
+  border-color: #3d3558;
+}
+
+body.page-test .sidebar-toolbar {
+  border-bottom-color: #3d3558;
+}
+
+body.page-test #events-list li {
+  border-bottom-color: #3d3558;
+}
+
+body.page-test .badge-test {
+  background: #6b4fa8;
+}
+
 body.no-scroll {
   overflow: hidden;
   height: 100vh;
@@ -242,7 +290,7 @@ body.no-scroll {
 }
 
 #annotator-screen .top-bar {
-  position: static;
+  display: none;
 }
 
 .meta {
@@ -250,16 +298,100 @@ body.no-scroll {
   flex-wrap: wrap;
   gap: 0.5rem 0.75rem;
   align-items: center;
-  margin-bottom: 0.5rem;
+  margin-bottom: 0;
   font-size: 0.8rem;
   color: var(--muted);
 }
 
-.labels-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 0.75rem;
-  align-items: start;
+.annotator-top-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem 0.5rem;
+}
+
+.annotator-top-bar.compact {
+  padding: 0.2rem 0.5rem;
+  min-height: 0;
+}
+
+.top-bar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  width: 100%;
+  margin-left: auto;
+}
+
+.top-bar-countdowns {
+  flex-shrink: 0;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.annotator-top-bar .api-countdown {
+  min-width: 4.5rem;
+  padding: 0.25rem 0.5rem;
+}
+
+.annotator-top-bar .countdown-value {
+  font-size: 1.6rem;
+}
+
+.annotator-top-bar .countdown-unit {
+  font-size: 0.75rem;
+  margin-top: 0;
+}
+
+.annotator-top-bar .countdown-hint {
+  font-size: 0.62rem;
+  margin-top: 0;
+}
+
+.sidebar-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  flex-shrink: 0;
+  margin-bottom: 0.65rem;
+  padding-bottom: 0.65rem;
+  border-bottom: 1px solid #2a3a52;
+}
+
+.sidebar-toolbar .small-btn {
+  width: 100%;
+  text-align: center;
+}
+
+.sidebar-toolbar .api-countdown {
+  min-width: 0;
+  width: 100%;
+  padding: 0.35rem 0.5rem;
+}
+
+.sidebar-toolbar .countdown-value {
+  font-size: 1.75rem;
+}
+
+.sidebar-toolbar .countdown-unit {
+  font-size: 0.75rem;
+}
+
+.sidebar-toolbar .countdown-hint {
+  font-size: 0.62rem;
 }
 
 .api-countdown {
@@ -275,25 +407,131 @@ body.no-scroll {
   text-align: center;
 }
 
+.api-countdown.video-countdown {
+  position: absolute;
+  top: 0.65rem;
+  left: 0.65rem;
+  z-index: 7;
+  flex-direction: row;
+  align-items: baseline;
+  justify-content: flex-start;
+  gap: 0.2rem;
+  min-width: 0;
+  padding: 0.2rem 0.55rem;
+  background: rgba(0, 0, 0, 0.28);
+  border: none;
+  border-radius: 10px;
+  pointer-events: none;
+  backdrop-filter: blur(2px);
+}
+
 .api-countdown.hidden {
   display: none;
+}
+
+.api-countdown.video-countdown.active {
+  display: flex;
 }
 
 .api-countdown.active .countdown-value {
   color: #fff;
 }
 
-.api-countdown.urgent {
-  border-color: #e85d5d;
-  animation: pulse-border 0.8s ease infinite;
+.video-countdown .countdown-value {
+  font-size: clamp(3.25rem, 9vw, 6rem);
+  font-weight: 900;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.82);
+  text-shadow: 0 2px 16px rgba(0, 0, 0, 0.75);
+}
+
+.video-countdown .countdown-unit {
+  font-size: clamp(1.25rem, 3vw, 2rem);
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.55);
+  margin-top: 0;
+}
+
+.video-countdown .countdown-hint {
+  display: none;
+}
+
+.api-countdown.urgent .countdown-value {
+  color: #ff8a8a;
+  animation: countdown-jump 0.45s ease-in-out infinite;
+  text-shadow:
+    0 0 24px rgba(255, 70, 70, 0.95),
+    0 2px 12px rgba(0, 0, 0, 0.9);
+}
+
+.api-countdown.urgent .countdown-unit {
+  color: rgba(255, 160, 160, 0.9);
+  animation: countdown-jump 0.45s ease-in-out infinite;
+}
+
+.api-countdown.critical .countdown-value {
+  color: #fff;
+  animation: countdown-jump-critical 0.32s ease-in-out infinite;
+  text-shadow:
+    0 0 32px rgba(255, 40, 40, 1),
+    0 0 48px rgba(255, 100, 0, 0.6),
+    0 2px 10px rgba(0, 0, 0, 1);
+}
+
+.api-countdown.critical .countdown-unit {
+  color: #fff;
+  animation: countdown-jump-critical 0.32s ease-in-out infinite;
+}
+
+.api-countdown.video-countdown.urgent,
+.api-countdown.video-countdown.critical {
+  background: rgba(80, 0, 0, 0.42);
 }
 
 .api-countdown.done {
   border-color: var(--success);
 }
 
+.api-countdown.video-countdown.done {
+  background: rgba(0, 40, 20, 0.35);
+  border: none;
+}
+
 .api-countdown.done .countdown-value {
   color: var(--success);
+}
+
+.video-countdown.done .countdown-value {
+  color: #6bffb8;
+  animation: none;
+  text-shadow: 0 0 20px rgba(62, 207, 142, 0.7);
+}
+
+@keyframes countdown-jump {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+  50% {
+    transform: translateY(-8px) scale(1.06);
+  }
+}
+
+@keyframes countdown-jump-critical {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+  }
+  25% {
+    transform: translateY(-12px) scale(1.12);
+  }
+  50% {
+    transform: translateY(-4px) scale(1.08);
+  }
+  75% {
+    transform: translateY(-14px) scale(1.14);
+  }
 }
 
 @keyframes pulse-border {
@@ -338,7 +576,8 @@ body.no-scroll {
 .annotator-main {
   min-width: 0;
   min-height: 0;
-  padding: 0.5rem 0.75rem;
+  height: 100%;
+  padding: 0 0.5rem 0.35rem;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -347,7 +586,7 @@ body.no-scroll {
 .events-sidebar {
   background: var(--surface);
   border-left: 1px solid #2a3a52;
-  padding: 0.5rem 0.65rem;
+  padding: 0.35rem 0.5rem;
   overflow: hidden;
   min-height: 0;
   display: flex;
@@ -363,6 +602,7 @@ body.no-scroll {
 
 .events-sidebar .events-panel h2 {
   flex-shrink: 0;
+  margin: 0 0 0.5rem;
 }
 
 .events-sidebar #events-list {
@@ -381,6 +621,36 @@ body.no-scroll {
   margin-left: auto;
 }
 
+.nav-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+  color: var(--text);
+}
+
+.role-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  color: var(--text);
+}
+
+.countdown-column {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.test-next-countdown {
+  border-color: #6b4fa8;
+}
+
+.test-next-countdown .countdown-value {
+  color: #b89cff;
+  font-size: 2rem;
+}
+
 .reviewer-actions {
   display: flex;
   gap: 0.5rem;
@@ -395,64 +665,117 @@ body.no-scroll {
   font-weight: 600;
 }
 
+.annotator-bottom {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
 .label-grid {
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  grid-template-rows: repeat(3, auto);
+  grid-template-columns: repeat(8, 1fr);
+  grid-template-rows: repeat(2, auto);
   gap: 0.35rem;
-  width: 80%;
-  max-width: 100%;
+  width: 100%;
+  flex-shrink: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  padding-bottom: 0.15rem;
+}
+
+.label-grid::-webkit-scrollbar {
+  height: 4px;
+}
+
+.label-grid::-webkit-scrollbar-thumb {
+  background: #3a4f6a;
+  border-radius: 4px;
 }
 
 .label-btn {
-  padding: 0.4rem 0.2rem;
-  font-size: 0.74rem;
-  font-weight: 600;
-  border: 2px solid transparent;
+  flex: 1 0 auto;
+  min-width: 0;
+  padding: 0.45rem 0.5rem;
+  font-size: 1rem;
+  font-weight: 700;
+  border: 2px solid rgba(255, 255, 255, 0.15);
   border-radius: 8px;
   cursor: pointer;
-  background: var(--surface2);
-  color: var(--text);
-  transition: background 0.12s, border-color 0.12s, transform 0.08s;
+  color: #fff;
+  transition: filter 0.12s, border-color 0.12s, transform 0.08s;
   line-height: 1.2;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  white-space: nowrap;
 }
 
 .label-btn:hover {
-  background: #2f4260;
-  border-color: var(--accent);
+  filter: brightness(1.15);
+  border-color: rgba(255, 255, 255, 0.45);
 }
 
 .label-btn:active {
   transform: scale(0.97);
 }
 
-.label-btn kbd {
-  display: block;
-  font-size: 0.62rem;
-  color: var(--muted);
-  font-weight: 400;
-  margin-top: 0.1rem;
-}
+.label-btn[data-label="pass"] { background: #2563eb; }
+.label-btn[data-label="pass_received"] { background: #7c3aed; }
+.label-btn[data-label="recovery"] { background: #059669; }
+.label-btn[data-label="tackle"] { background: #dc2626; }
+.label-btn[data-label="interception"] { background: #ea580c; }
+.label-btn[data-label="ball_out_of_play"] { background: #475569; }
+.label-btn[data-label="clearance"] { background: #0891b2; }
+.label-btn[data-label="take_on"] { background: #db2777; }
+.label-btn[data-label="substitution"] { background: #ca8a04; }
+.label-btn[data-label="block"] { background: #4f46e5; }
+.label-btn[data-label="aerial_duel"] { background: #0d9488; }
+.label-btn[data-label="shot"] { background: #b91c1c; }
+.label-btn[data-label="save"] { background: #16a34a; }
+.label-btn[data-label="foul"] { background: #c2410c; }
+.label-btn[data-label="goal"] { background: #eab308; color: #1a1200; text-shadow: none; }
 
 .video-wrap {
-  position: relative;
-  flex: 1;
-  min-height: 0;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.video-aspect {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  border-radius: 0;
+  overflow: hidden;
+}
+
+#annotator-screen .annotator-layout {
+  padding-top: 0;
+  height: 100%;
 }
 
 #annotator-video {
-  flex: 1;
-  width: 100%;
-  min-height: 0;
-  max-height: 100%;
-  background: #000;
-  border-radius: 8px;
   display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  aspect-ratio: 16 / 9;
   object-fit: contain;
+}
+
+.video-controller {
+  flex-shrink: 0;
 }
 
 #reviewer-video {
@@ -463,7 +786,7 @@ body.no-scroll {
   display: block;
 }
 
-.event-overlay {
+.video-aspect .event-overlay {
   position: absolute;
   left: 50%;
   top: 45%;
@@ -493,7 +816,7 @@ body.no-scroll {
   visibility: hidden;
 }
 
-.video-ready {
+.video-aspect .video-ready {
   position: absolute;
   inset: 0;
   display: flex;
@@ -625,10 +948,29 @@ body.no-scroll {
 
 #events-list li,
 #reviewer-events li {
-  padding: 0.4rem 0.6rem;
+  padding: 0;
   border-bottom: 1px solid #2a3a52;
   font-family: ui-monospace, monospace;
   font-size: 0.9rem;
+}
+
+#events-list .event-item {
+  width: 100%;
+  text-align: left;
+  padding: 0.45rem 0.55rem;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--text);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.35;
+}
+
+#events-list .event-item:hover {
+  background: var(--surface2);
+  color: #ff9a9a;
 }
 
 .reviewer-bar {
@@ -762,33 +1104,22 @@ body.no-scroll {
 
 @media (max-width: 900px) {
   #annotator-screen.active {
-    height: auto;
-    max-height: none;
-    overflow: auto;
+    height: 100vh;
+    max-height: 100vh;
+    overflow: hidden;
   }
 
   body.no-scroll {
-    overflow: auto;
-    height: auto;
+    overflow: hidden;
+    height: 100vh;
   }
 
   .annotator-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: 1fr 200px;
   }
 
   .events-sidebar {
-    border-left: none;
-    border-top: 1px solid #2a3a52;
-    max-height: 180px;
-  }
-
-  .label-grid {
-    grid-template-columns: repeat(3, 1fr);
-    grid-template-rows: auto;
-  }
-
-  .labels-row {
-    grid-template-columns: 1fr;
+    max-height: none;
   }
 
   .api-countdown {

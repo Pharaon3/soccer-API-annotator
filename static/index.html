@@ -6,61 +6,15 @@
   <title>Soccer Video Annotator</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
-<body>
-  <div id="auth-screen" class="screen active">
-    <div class="card auth-card" id="user-auth-card">
-      <h1>Soccer Annotator</h1>
-      <div class="auth-tabs">
-        <button type="button" id="tab-login" class="auth-tab active">Login</button>
-        <button type="button" id="tab-signup" class="auth-tab">Sign up</button>
-      </div>
-      <form id="login-form" class="auth-form">
-        <label>Username<input type="text" id="login-username" autocomplete="username" required /></label>
-        <label>Password<input type="password" id="login-password" autocomplete="current-password" required /></label>
-        <button type="submit" class="role-btn primary">Log in</button>
-      </form>
-      <form id="signup-form" class="auth-form hidden">
-        <label>Username<input type="text" id="signup-username" autocomplete="username" required /></label>
-        <label>Password<input type="password" id="signup-password" autocomplete="new-password" required minlength="6" /></label>
-        <button type="submit" class="role-btn primary">Request access</button>
-        <p class="auth-hint">An admin must approve your account before you can log in.</p>
-      </form>
-      <p id="auth-message" class="status-text"></p>
-      <button type="button" id="btn-show-admin-login" class="link-btn">Admin login</button>
-    </div>
-    <div class="card auth-card hidden" id="admin-login-card">
-      <h1>Admin</h1>
-      <form id="admin-login-form" class="auth-form">
-        <label>Username<input type="text" id="admin-username" autocomplete="username" required /></label>
-        <label>Password<input type="password" id="admin-password" autocomplete="current-password" required /></label>
-        <button type="submit" class="role-btn primary">Log in as admin</button>
-      </form>
-      <p id="admin-auth-message" class="status-text"></p>
-      <button type="button" id="btn-back-user-auth" class="link-btn">Back to user login</button>
-    </div>
-  </div>
-
-  <div id="admin-screen" class="screen">
-    <header class="top-bar reviewer-bar">
-      <h1>Admin — pending signups</h1>
-      <div class="reviewer-actions">
-        <span class="badge">Admin</span>
-        <button type="button" id="btn-admin-logout" class="small-btn">Log out</button>
-      </div>
-    </header>
-    <main class="admin-main">
-      <p class="auth-hint">New signup requests appear here and trigger a browser alert.</p>
-      <ul id="pending-users-list" class="pending-users-list"></ul>
-    </main>
-  </div>
-
-  <div id="role-screen" class="screen">
+<body class="page-annotate">
+  <div id="role-screen" class="screen active">
     <div class="card role-card">
       <h1>Soccer Annotator</h1>
       <p class="subtitle">Choose your role to continue</p>
       <div class="role-buttons">
         <button type="button" id="btn-annotator" class="role-btn primary">Annotator</button>
         <button type="button" id="btn-reviewer" class="role-btn secondary">Reviewer</button>
+        <a href="/app/test" class="role-btn secondary role-link">Practice test</a>
       </div>
       <p id="role-status" class="status-text"></p>
       <button type="button" id="btn-logout" class="link-btn">Log out</button>
@@ -68,43 +22,42 @@
   </div>
 
   <div id="annotator-screen" class="screen">
-    <header class="top-bar">
-      <div class="meta">
-        <span class="badge" id="annotator-badge">Annotator</span>
-        <span id="session-info"></span>
-        <span id="job-info"></span>
-        <button type="button" id="btn-switch-role-annotator" class="small-btn switch-role-btn">Switch role</button>
-      </div>
-      <div class="labels-row">
-        <div id="label-buttons" class="label-grid"></div>
-        <div id="api-countdown" class="api-countdown hidden" aria-live="polite">
-          <span id="countdown-value" class="countdown-value">—</span>
-          <span class="countdown-unit">s</span>
-          <span class="countdown-hint">until API</span>
-        </div>
-      </div>
-    </header>
-
     <div class="annotator-layout">
       <div class="annotator-main">
         <main class="video-wrap">
-          <video id="annotator-video" controls playsinline preload="auto"></video>
-          <div id="video-ready" class="video-ready hidden">READY</div>
-          <div id="event-overlay" class="event-overlay hidden"></div>
-          <div class="video-controller">
-            <button type="button" id="btn-play-pause" class="ctrl-btn" title="Play / Pause (Space)">▶</button>
-            <span id="video-time-display" class="time-display">0:00.00</span>
-            <span id="video-frame-display" class="frame-display">frame 0</span>
-            <span class="controller-hint">Space — play / pause</span>
+          <div class="video-aspect">
+            <video id="annotator-video" controls playsinline preload="metadata"></video>
+            <div id="api-countdown" class="api-countdown video-countdown hidden" aria-live="polite">
+              <span id="countdown-value" class="countdown-value">—</span>
+              <span class="countdown-unit">s</span>
+            </div>
+            <div id="video-ready" class="video-ready hidden">READY</div>
+            <div id="event-overlay" class="event-overlay hidden"></div>
+          </div>
+          <div class="annotator-bottom">
+            <div class="video-controller">
+              <button type="button" id="btn-play-pause" class="ctrl-btn" title="Play / Pause (Space)">▶</button>
+              <span id="video-time-display" class="time-display">0:00.00</span>
+              <span id="video-frame-display" class="frame-display">frame 0</span>
+              <span class="controller-hint">Space — play / pause</span>
+            </div>
+            <div id="label-buttons" class="label-grid"></div>
           </div>
         </main>
       </div>
 
       <aside class="events-sidebar">
         <section class="events-panel">
+          <div class="sidebar-toolbar">
+            <a href="/app/test" class="small-btn nav-link">Practice test</a>
+            <button type="button" id="btn-switch-role-annotator" class="small-btn switch-role-btn">Switch role</button>
+          </div>
           <h2>Events this session</h2>
           <ul id="events-list"></ul>
         </section>
+        <span id="annotator-badge" class="sr-only">Annotator</span>
+        <span id="session-info" class="sr-only"></span>
+        <span id="job-info" class="sr-only"></span>
       </aside>
     </div>
   </div>
@@ -140,7 +93,6 @@
       <div class="role-buttons">
         <button type="button" id="modal-btn-annotator" class="role-btn primary">Annotator</button>
         <button type="button" id="modal-btn-reviewer" class="role-btn secondary">Reviewer</button>
-        <button type="button" id="modal-btn-admin" class="role-btn secondary hidden">Admin</button>
       </div>
       <button type="button" id="modal-btn-cancel" class="small-btn modal-cancel">Cancel</button>
     </div>

@@ -1,21 +1,8 @@
 const DEFAULT_FPS = 25;
 const API_RESPONSE_SEC = 22;
-const AUTH_TOKEN_KEY = "auth_token";
-const AUTH_ADMIN_KEY = "is_admin";
+const IS_TEST_PAGE = document.body.dataset.page === "test";
+const PENDING_ANNOTATE_KEY = "pendingAnnotateJob";
 
-const authScreen = document.getElementById("auth-screen");
-const adminScreen = document.getElementById("admin-screen");
-const userAuthCard = document.getElementById("user-auth-card");
-const adminLoginCard = document.getElementById("admin-login-card");
-const loginForm = document.getElementById("login-form");
-const signupForm = document.getElementById("signup-form");
-const adminLoginForm = document.getElementById("admin-login-form");
-const authMessage = document.getElementById("auth-message");
-const adminAuthMessage = document.getElementById("admin-auth-message");
-const pendingUsersList = document.getElementById("pending-users-list");
-
-let authToken = localStorage.getItem(AUTH_TOKEN_KEY) || "";
-let isAdmin = localStorage.getItem(AUTH_ADMIN_KEY) === "1";
 let wsAuthed = false;
 let wsConnectResolve = null;
 
@@ -59,6 +46,8 @@ const videoTimeDisplay = document.getElementById("video-time-display");
 const videoFrameDisplay = document.getElementById("video-frame-display");
 const apiCountdown = document.getElementById("api-countdown");
 const countdownValue = document.getElementById("countdown-value");
+const testNextCountdown = document.getElementById("test-next-countdown");
+const testNextValue = document.getElementById("test-next-value");
 const videoReady = document.getElementById("video-ready");
 
 let ws = null;
@@ -67,11 +56,17 @@ let currentJobId = null;
 let pendingAnnotateJob = null;
 let notificationPermissionRequested = false;
 let sessionEvents = [];
+let nextEventId = 0;
 let overlayTimer = null;
 let videoFps = DEFAULT_FPS;
 let frameRafId = null;
 let countdownRafId = null;
 let countdownDeadline = null;
+let testNextRafId = null;
+let testNextDeadline = null;
+let pendingTestJob = null;
+let nextTestRoundAtSec = null;
+let loadedVideoJobId = null;
 
 function wsUrl() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -92,37 +87,33 @@ function formatTime(sec) {
   return `${m}:${s.toFixed(2).padStart(5, "0")}`;
 }
 
-const allScreens = [
-  authScreen,
-  adminScreen,
-  roleScreen,
-  annotatorScreen,
-  reviewerScreen,
-];
+const allScreens = [roleScreen, annotatorScreen, reviewerScreen].filter(Boolean);
+
+function isAnnotatorView(screen) {
+  return screen === annotatorScreen;
+}
 
 function showScreen(screen) {
   allScreens.forEach((el) => {
     if (el) el.classList.toggle("active", el === screen);
   });
-  document.body.classList.toggle("no-scroll", screen === annotatorScreen);
-  if (screen !== annotatorScreen) {
+  document.body.classList.toggle("no-scroll", isAnnotatorView(screen));
+  if (!isAnnotatorView(screen)) {
     stopApiCountdown(true);
+    if (IS_TEST_PAGE) stopTestNextCountdown(true);
   }
 }
 
-function saveAuth(token, admin) {
-  authToken = token;
-  isAdmin = admin;
-  localStorage.setItem(AUTH_TOKEN_KEY, token);
-  localStorage.setItem(AUTH_ADMIN_KEY, admin ? "1" : "0");
+function isAnnotatingRole() {
+  return (
+    role === "annotator" ||
+    role === "test" ||
+    (role === "reviewer" && !!currentJobId)
+  );
 }
 
-function clearAuth() {
-  authToken = "";
-  isAdmin = false;
+function clearSession() {
   wsAuthed = false;
-  localStorage.removeItem(AUTH_TOKEN_KEY);
-  localStorage.removeItem(AUTH_ADMIN_KEY);
   if (ws) {
     ws.close();
     ws = null;
@@ -131,88 +122,30 @@ function clearAuth() {
 
 async function apiFetch(url, options = {}) {
   const headers = { ...(options.headers || {}) };
-  if (authToken) headers.Authorization = `Bearer ${authToken}`;
   if (options.body && !headers["Content-Type"]) {
     headers["Content-Type"] = "application/json";
   }
-  return fetch(url, { ...options, headers });
-}
-
-function formatSignupTime(ts) {
-  return new Date(ts * 1000).toLocaleString();
-}
-
-function renderPendingUsers(users) {
-  if (!pendingUsersList) return;
-  if (!users.length) {
-    pendingUsersList.innerHTML = "<li><em>No pending signups</em></li>";
-    return;
-  }
-  pendingUsersList.innerHTML = users
-    .map(
-      (u) => `
-    <li class="pending-user-item">
-      <div>
-        <strong>${u.username}</strong>
-        <span class="pending-time">${formatSignupTime(u.created_at)}</span>
-      </div>
-      <div class="pending-actions">
-        <button type="button" class="small-btn approve-btn" data-id="${u.id}">Approve</button>
-        <button type="button" class="small-btn reject-btn" data-id="${u.id}">Reject</button>
-      </div>
-    </li>`
-    )
-    .join("");
-  pendingUsersList.querySelectorAll(".approve-btn").forEach((btn) => {
-    btn.addEventListener("click", () => approveUser(parseInt(btn.dataset.id, 10)));
+  const res = await fetch(url, {
+    ...options,
+    headers,
+    credentials: "same-origin",
   });
-  pendingUsersList.querySelectorAll(".reject-btn").forEach((btn) => {
-    btn.addEventListener("click", () => rejectUser(parseInt(btn.dataset.id, 10)));
-  });
-}
-
-function alertAdminSignup(user) {
-  const title = "New signup request";
-  const body = `${user.username} requested access.`;
-  if ("Notification" in window && Notification.permission === "granted") {
-    try {
-      new Notification(title, { body, tag: "signup-pending" });
-    } catch {
-      window.alert(`${title}\n\n${body}`);
-    }
-  } else {
-    window.alert(`${title}\n\n${body}`);
+  if (res.status === 401) {
+    window.location.href = "/";
+    throw new Error("Not authenticated");
   }
+  return res;
 }
 
-async function approveUser(userId) {
-  send({ type: "admin_approve", user_id: userId });
-}
-
-async function rejectUser(userId) {
-  send({ type: "admin_reject", user_id: userId });
-}
-
-async function loadPendingUsers() {
-  const res = await apiFetch("/api/admin/pending");
-  if (res.ok) {
-    renderPendingUsers(await res.json());
-  }
-}
-
-async function enterAdmin() {
-  await connectWebSocket();
-  requestNotificationPermission();
-  showScreen(adminScreen);
-  await loadPendingUsers();
-  send({ type: "admin_pending" });
-}
-
-function logout() {
-  apiFetch("/api/auth/logout", { method: "POST" }).catch(() => {});
-  clearAuth();
+async function logout() {
+  clearSession();
   role = null;
-  showScreen(authScreen);
+  try {
+    await fetch("/api/auth/logout", { method: "POST", credentials: "same-origin" });
+  } catch {
+    /* ignore */
+  }
+  window.location.href = "/";
 }
 
 function stopApiCountdown(hide = false) {
@@ -222,16 +155,52 @@ function stopApiCountdown(hide = false) {
   }
   countdownDeadline = null;
   if (!apiCountdown) return;
-  apiCountdown.classList.remove("active", "urgent", "done");
+  apiCountdown.classList.remove("active", "urgent", "critical", "done");
   if (hide) {
     apiCountdown.classList.add("hidden");
     if (countdownValue) countdownValue.textContent = "—";
   }
 }
 
+function stopTestNextCountdown(hide = false) {
+  if (testNextRafId !== null) {
+    cancelAnimationFrame(testNextRafId);
+    testNextRafId = null;
+  }
+  testNextDeadline = null;
+  if (!testNextCountdown) return;
+  testNextCountdown.classList.remove("active");
+  if (hide) {
+    testNextCountdown.classList.add("hidden");
+    if (testNextValue) testNextValue.textContent = "—";
+  }
+}
+
+function startTestNextCountdown(nextRoundAtSec) {
+  if (!IS_TEST_PAGE || !testNextCountdown || !testNextValue) return;
+  stopTestNextCountdown();
+  testNextCountdown.classList.remove("hidden");
+  testNextCountdown.classList.add("active");
+  testNextDeadline = nextRoundAtSec * 1000;
+
+  const tick = () => {
+    const leftMs = testNextDeadline - Date.now();
+    const leftSec = Math.max(0, leftMs / 1000);
+    testNextValue.textContent = String(Math.ceil(leftSec));
+    if (leftSec <= 0) {
+      testNextValue.textContent = "0";
+      testNextRafId = null;
+      return;
+    }
+    testNextRafId = requestAnimationFrame(tick);
+  };
+  testNextRafId = requestAnimationFrame(tick);
+}
+
 function startApiCountdown(durationSec = API_RESPONSE_SEC) {
   if (!apiCountdown || !countdownValue) return;
   stopApiCountdown();
+  if (IS_TEST_PAGE) stopTestNextCountdown(true);
   apiCountdown.classList.remove("hidden", "done");
   apiCountdown.classList.add("active");
   countdownDeadline = performance.now() + durationSec * 1000;
@@ -242,12 +211,18 @@ function startApiCountdown(durationSec = API_RESPONSE_SEC) {
     const display = Math.ceil(leftSec);
     countdownValue.textContent = String(display);
     apiCountdown.classList.toggle("urgent", display <= 5 && display > 0);
+    apiCountdown.classList.toggle("critical", display <= 3 && display > 0);
 
     if (leftSec <= 0) {
       countdownValue.textContent = "0";
-      apiCountdown.classList.remove("urgent", "active");
+      apiCountdown.classList.remove("urgent", "critical", "active");
       apiCountdown.classList.add("done");
       countdownRafId = null;
+      if (IS_TEST_PAGE) {
+        currentJobId = null;
+        loadedVideoJobId = null;
+        if (nextTestRoundAtSec) startTestNextCountdown(nextTestRoundAtSec);
+      }
       return;
     }
     countdownRafId = requestAnimationFrame(tick);
@@ -256,11 +231,11 @@ function startApiCountdown(durationSec = API_RESPONSE_SEC) {
 }
 
 function showRoleModal() {
-  rolePickerModal.classList.remove("hidden");
+  rolePickerModal?.classList.remove("hidden");
 }
 
 function hideRoleModal() {
-  rolePickerModal.classList.add("hidden");
+  rolePickerModal?.classList.add("hidden");
 }
 
 function requestNotificationPermission() {
@@ -271,9 +246,9 @@ function requestNotificationPermission() {
   }
 }
 
-function notifyNewAnnotationJob(data) {
+function notifyNewAnnotationJob() {
   const title = "New annotation job";
-  const body = "A video is ready to annotate. Switching to annotator…";
+  const body = "READY — switching to annotator…";
   if ("Notification" in window && Notification.permission === "granted") {
     try {
       const n = new Notification(title, { body, tag: "annotate-job" });
@@ -284,8 +259,6 @@ function notifyNewAnnotationJob(data) {
     } catch {
       /* ignore */
     }
-  } else {
-    window.alert(`${title}\n\n${body}`);
   }
 }
 
@@ -297,11 +270,25 @@ function hideVideoReady() {
   if (videoReady) videoReady.classList.add("hidden");
 }
 
+function redirectToAnnotatorForApiJob(data) {
+  sessionStorage.setItem(PENDING_ANNOTATE_KEY, JSON.stringify(data));
+  window.location.href = "/app";
+}
+
 function goToAnnotatorForJob(data) {
+  if (IS_TEST_PAGE) {
+    redirectToAnnotatorForApiJob(data);
+    return;
+  }
   hideRoleModal();
   buildLabelButtons();
   showScreen(annotatorScreen);
+  showVideoReady();
 
+  if (data.annotator_index != null) {
+    startAnnotatorJob(data);
+    return;
+  }
   if (role !== "annotator") {
     pendingAnnotateJob = data;
     role = "annotator";
@@ -326,15 +313,15 @@ function connectWebSocket() {
       resolve();
       return;
     }
-    if (!authToken) {
-      reject(new Error("Not logged in"));
-      return;
-    }
     wsAuthed = false;
     wsConnectResolve = resolve;
     ws = new WebSocket(wsUrl());
     ws.onopen = () => {
-      send({ type: "auth", token: authToken });
+      wsAuthed = true;
+      if (wsConnectResolve) {
+        wsConnectResolve();
+        wsConnectResolve = null;
+      }
     };
     ws.onerror = () => {
       wsConnectResolve = null;
@@ -395,13 +382,20 @@ function togglePlayPause() {
   updatePlayPauseButton();
 }
 
+function formatLabelKey(key) {
+  return key.length === 1 ? key.toUpperCase() : key;
+}
+
 function buildLabelButtons() {
+  if (!labelButtons) return;
   labelButtons.innerHTML = "";
   LABELS.forEach((label) => {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "label-btn";
-    btn.innerHTML = `${label.display}<kbd>${label.key.toUpperCase()}</kbd>`;
+    btn.dataset.label = label.id;
+    btn.textContent = `${label.id} (${formatLabelKey(label.key)})`;
+    btn.title = label.display;
     btn.addEventListener("click", () => annotate(label.id));
     labelButtons.appendChild(btn);
   });
@@ -419,21 +413,38 @@ function showOverlay(labelId, frame) {
 }
 
 function renderSessionEvents() {
+  if (!eventsList) return;
   eventsList.innerHTML = sessionEvents
     .slice()
     .sort((a, b) => a.time_sec - b.time_sec)
-    .map(
-      (e) =>
-        `<li>frame ${e.frame} · ${e.time_sec.toFixed(2)}s — ${e.label}</li>`
-    )
+    .map((e) => {
+      const labelName =
+        LABELS.find((l) => l.id === e.label)?.display ?? e.label;
+      return `<li><button type="button" class="event-item" data-event-id="${e.id}" title="Click to remove">frame ${e.frame} · ${e.time_sec.toFixed(2)}s — ${labelName}</button></li>`;
+    })
     .join("");
+}
+
+function removeSessionEvent(eventId) {
+  const idx = sessionEvents.findIndex((e) => e.id === eventId);
+  if (idx === -1) return;
+  const removed = sessionEvents.splice(idx, 1)[0];
+  renderSessionEvents();
+  if (currentJobId) {
+    send({
+      type: "annotation_remove",
+      job_id: currentJobId,
+      time_sec: removed.time_sec,
+      label: removed.label,
+    });
+  }
 }
 
 function annotate(labelId) {
   if (!currentJobId || !video.src) return;
   const time_sec = video.currentTime;
   const frame = timeToFrame(time_sec);
-  const event = { time_sec, frame, label: labelId };
+  const event = { id: ++nextEventId, time_sec, frame, label: labelId };
   sessionEvents.push(event);
   renderSessionEvents();
   showOverlay(labelId, frame);
@@ -453,88 +464,118 @@ function estimateFps() {
   }
 }
 
+function sameVideoUrl(currentSrc, nextUrl) {
+  if (!currentSrc || !nextUrl) return false;
+  try {
+    return new URL(currentSrc, location.href).href === new URL(nextUrl, location.href).href;
+  } catch {
+    return currentSrc === nextUrl;
+  }
+}
+
+function waitForVideoReady() {
+  if (video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    video.addEventListener("canplay", resolve, { once: true });
+  });
+}
+
 async function startAnnotatorJob(data) {
+  const url = data.original_url || data.video_url;
+  if (!url) return;
+
+  if (data.job_id === loadedVideoJobId && sameVideoUrl(video.src, url)) {
+    return;
+  }
+
   currentJobId = data.job_id;
+  loadedVideoJobId = data.job_id;
   sessionEvents = [];
+  nextEventId = 0;
   renderSessionEvents();
   startApiCountdown(data.duration_sec ?? API_RESPONSE_SEC);
 
   const index = data.annotator_index ?? 1;
   const total = data.annotator_total ?? 1;
   const offset = data.start_offset_sec ?? 0;
-  jobInfo.textContent = `Job active · start ${offset.toFixed(2)}s · ${index}/${total}`;
+  const prefix = IS_TEST_PAGE ? "Test round" : "Job active";
+  if (jobInfo) {
+    jobInfo.textContent = `${prefix} · start ${offset.toFixed(2)}s · ${index}/${total}`;
+  }
 
   showVideoReady();
   video.pause();
-  video.src = data.video_url;
-  video.load();
-
-  const playFromOffset = async () => {
-    hideVideoReady();
-    estimateFps();
-    try {
-      video.currentTime = offset;
-      await video.play();
-    } catch (err) {
-      console.warn("Autoplay blocked, retrying muted", err);
-      video.muted = true;
-      video.currentTime = offset;
-      await video.play();
-    }
-    startVideoHudLoop();
-    updateVideoHud();
-  };
-
-  const onReady = () => {
-    video.removeEventListener("canplay", onReady);
-    playFromOffset();
-  };
-
-  if (video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
-    await playFromOffset();
-  } else {
-    video.addEventListener("canplay", onReady, { once: true });
+  if (!sameVideoUrl(video.src, url)) {
+    video.src = url;
+    await waitForVideoReady();
   }
+
+  hideVideoReady();
+  estimateFps();
+  try {
+    video.currentTime = offset;
+    await video.play();
+  } catch (err) {
+    console.warn("Autoplay blocked, retrying muted", err);
+    video.muted = true;
+    video.currentTime = offset;
+    await video.play();
+  }
+  startVideoHudLoop();
+  updateVideoHud();
 }
 
 function handleAnnotateStart(data) {
-  notifyNewAnnotationJob(data);
+  notifyNewAnnotationJob();
   goToAnnotatorForJob(data);
+}
+
+function handleTestStart(data) {
+  goToTestJob(data);
+}
+
+function goToTestJob(data) {
+  buildLabelButtons();
+  showScreen(annotatorScreen);
+  showVideoReady();
+
+  if (role !== "test") {
+    pendingTestJob = data;
+    role = "test";
+    send({ type: "set_role", role: "test" });
+    return;
+  }
+  startAnnotatorJob(data);
+}
+
+function handleTestSchedule(data) {
+  nextTestRoundAtSec = data.next_round_at;
+  if (!currentJobId) {
+    startTestNextCountdown(nextTestRoundAtSec);
+  }
 }
 
 function handleMessage(data) {
   switch (data.type) {
-    case "auth_ok":
-      wsAuthed = true;
-      if (wsConnectResolve) {
-        wsConnectResolve();
-        wsConnectResolve = null;
-      }
-      if (data.user?.is_admin && data.pending_users) {
-        renderPendingUsers(data.pending_users);
-      }
-      break;
-    case "auth_error":
-    case "auth_required":
-      wsAuthed = false;
-      if (wsConnectResolve) {
-        wsConnectResolve = null;
-      }
-      break;
-    case "signup_pending":
-      if (isAdmin) {
-        alertAdminSignup(data.user);
-        send({ type: "admin_pending" });
-      }
-      break;
-    case "pending_list":
-      if (isAdmin) renderPendingUsers(data.users || []);
-      break;
-    case "user_approved":
-    case "user_rejected":
-      if (isAdmin) send({ type: "admin_pending" });
-      break;
     case "role_ack":
+      if (data.role === "test") {
+        sessionInfo.textContent = `Practice test · annotator #${data.annotator_index} of ${data.annotator_total} · offset ${data.start_offset_sec.toFixed(2)}s`;
+        if (!pendingTestJob) {
+          jobInfo.textContent = "Next test loads automatically every minute…";
+        }
+        buildLabelButtons();
+        if (!pendingTestJob) {
+          stopApiCountdown(true);
+        }
+        showScreen(annotatorScreen);
+        if (pendingTestJob) {
+          const job = applyRoleAckToJob(pendingTestJob, data);
+          pendingTestJob = null;
+          startAnnotatorJob(job);
+        }
+      }
       if (data.role === "annotator") {
         sessionInfo.textContent = `You are annotator #${data.annotator_index} of ${data.annotator_total} · offset ${data.start_offset_sec.toFixed(2)}s`;
         if (!pendingAnnotateJob) {
@@ -562,12 +603,18 @@ function handleMessage(data) {
       hideRoleModal();
       break;
     case "annotator_count":
-      if (role === "annotator") {
+      if (sessionInfo && isAnnotatingRole()) {
         sessionInfo.textContent = `Connected annotators: ${data.count}`;
       }
       break;
     case "annotate_start":
       handleAnnotateStart(data);
+      break;
+    case "test_start":
+      if (IS_TEST_PAGE) handleTestStart(data);
+      break;
+    case "test_schedule":
+      if (IS_TEST_PAGE) handleTestSchedule(data);
       break;
     case "videos_list":
       renderVideoList(data.videos);
@@ -588,11 +635,13 @@ async function enterRole(selectedRole) {
     requestNotificationPermission();
     role = selectedRole;
     send({ type: "set_role", role: selectedRole });
-    if (selectedRole === "annotator") {
+    if (selectedRole === "annotator" || selectedRole === "test") {
       buildLabelButtons();
     }
-  } catch {
-    roleStatus.textContent = "Could not connect to server.";
+  } catch (err) {
+    if (roleStatus) roleStatus.textContent = "Could not connect to server.";
+    else if (jobInfo) jobInfo.textContent = "Could not connect to server.";
+    console.warn(err);
   }
 }
 
@@ -609,7 +658,7 @@ async function switchToRole(selectedRole) {
 document.addEventListener(
   "keydown",
   (e) => {
-    if (role !== "annotator") return;
+    if (!isAnnotatingRole()) return;
     if (e.target.matches("input, textarea, select")) return;
 
     if (e.code === "Space") {
@@ -630,136 +679,78 @@ document.addEventListener(
 
 requestNotificationPermission();
 
-document.getElementById("tab-login")?.addEventListener("click", () => {
-  document.getElementById("tab-login").classList.add("active");
-  document.getElementById("tab-signup").classList.remove("active");
-  loginForm.classList.remove("hidden");
-  signupForm.classList.add("hidden");
-});
-
-document.getElementById("tab-signup")?.addEventListener("click", () => {
-  document.getElementById("tab-signup").classList.add("active");
-  document.getElementById("tab-login").classList.remove("active");
-  signupForm.classList.remove("hidden");
-  loginForm.classList.add("hidden");
-});
-
-document.getElementById("btn-show-admin-login")?.addEventListener("click", () => {
-  userAuthCard.classList.add("hidden");
-  adminLoginCard.classList.remove("hidden");
-});
-
-document.getElementById("btn-back-user-auth")?.addEventListener("click", () => {
-  adminLoginCard.classList.add("hidden");
-  userAuthCard.classList.remove("hidden");
-});
-
-loginForm?.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  authMessage.textContent = "";
-  const username = document.getElementById("login-username").value.trim();
-  const password = document.getElementById("login-password").value;
-  try {
-    const res = await apiFetch("/api/auth/login", {
-      method: "POST",
-      body: JSON.stringify({ username, password }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "Login failed");
-    saveAuth(data.token, false);
-    showScreen(roleScreen);
-  } catch (err) {
-    authMessage.textContent = err.message;
-  }
-});
-
-signupForm?.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  authMessage.textContent = "";
-  const username = document.getElementById("signup-username").value.trim();
-  const password = document.getElementById("signup-password").value;
-  try {
-    const res = await apiFetch("/api/auth/signup", {
-      method: "POST",
-      body: JSON.stringify({ username, password }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "Signup failed");
-    authMessage.textContent = data.message || "Signup submitted. Wait for admin approval.";
-    signupForm.reset();
-  } catch (err) {
-    authMessage.textContent = err.message;
-  }
-});
-
-adminLoginForm?.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  adminAuthMessage.textContent = "";
-  const username = document.getElementById("admin-username").value.trim();
-  const password = document.getElementById("admin-password").value;
-  try {
-    const res = await apiFetch("/api/admin/login", {
-      method: "POST",
-      body: JSON.stringify({ username, password }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || "Admin login failed");
-    saveAuth(data.token, true);
-    await enterAdmin();
-  } catch (err) {
-    adminAuthMessage.textContent = err.message;
-  }
-});
-
 document.getElementById("btn-logout")?.addEventListener("click", logout);
-document.getElementById("btn-admin-logout")?.addEventListener("click", logout);
 
-(async function initAuth() {
-  if (!authToken) {
-    showScreen(authScreen);
-    return;
-  }
+async function resumePendingAnnotateJob() {
+  const raw = sessionStorage.getItem(PENDING_ANNOTATE_KEY);
+  if (!raw) return;
+  sessionStorage.removeItem(PENDING_ANNOTATE_KEY);
   try {
-    if (isAdmin) {
-      const res = await apiFetch("/api/auth/admin/me");
-      if (!res.ok) throw new Error("session expired");
-      await enterAdmin();
-    } else {
-      const res = await apiFetch("/api/auth/me");
-      if (!res.ok) throw new Error("session expired");
-      showScreen(roleScreen);
+    const data = JSON.parse(raw);
+    await connectWebSocket();
+    requestNotificationPermission();
+    buildLabelButtons();
+    showScreen(annotatorScreen);
+    showVideoReady();
+    if (data.annotator_index != null) {
+      if (role !== "annotator") {
+        send({ type: "set_role", role: "annotator" });
+        role = "annotator";
+      }
+      startAnnotatorJob(data);
+      return;
     }
+    pendingAnnotateJob = data;
+    role = "annotator";
+    send({ type: "set_role", role: "annotator" });
   } catch {
-    clearAuth();
-    showScreen(authScreen);
+    pendingAnnotateJob = null;
   }
-})();
+}
 
-document.getElementById("btn-annotator").addEventListener("click", () => {
-  roleStatus.textContent = "Connecting…";
-  enterRole("annotator").then(() => {
-    roleStatus.textContent = "";
+if (IS_TEST_PAGE) {
+  document.body.classList.add("no-scroll");
+  buildLabelButtons();
+  enterRole("test");
+} else {
+  connectWebSocket().catch(() => {});
+  resumePendingAnnotateJob().then(() => {
+    if (!pendingAnnotateJob) showScreen(roleScreen);
   });
-});
 
-document.getElementById("btn-reviewer").addEventListener("click", () => {
+  document.getElementById("btn-annotator")?.addEventListener("click", () => {
   roleStatus.textContent = "Connecting…";
-  enterRole("reviewer").then(() => {
-    roleStatus.textContent = "";
+    enterRole("annotator").then(() => {
+      roleStatus.textContent = "";
+    });
   });
+
+  document.getElementById("btn-reviewer")?.addEventListener("click", () => {
+    roleStatus.textContent = "Connecting…";
+    enterRole("reviewer").then(() => {
+      roleStatus.textContent = "";
+    });
+  });
+
+  document.getElementById("btn-switch-role-annotator")?.addEventListener("click", showRoleModal);
+  document.getElementById("btn-switch-role-reviewer")?.addEventListener("click", showRoleModal);
+  document.getElementById("modal-btn-cancel")?.addEventListener("click", hideRoleModal);
+  document.getElementById("modal-btn-annotator")?.addEventListener("click", () => switchToRole("annotator"));
+  document.getElementById("modal-btn-reviewer")?.addEventListener("click", () => switchToRole("reviewer"));
+
+  document.getElementById("btn-refresh-videos")?.addEventListener("click", () => {
+    send({ type: "list_videos" });
+  });
+}
+
+btnPlayPause?.addEventListener("click", togglePlayPause);
+
+eventsList?.addEventListener("click", (e) => {
+  const btn = e.target.closest(".event-item");
+  if (!btn) return;
+  const eventId = Number(btn.dataset.eventId);
+  if (Number.isFinite(eventId)) removeSessionEvent(eventId);
 });
-
-document.getElementById("btn-switch-role-annotator").addEventListener("click", showRoleModal);
-document.getElementById("btn-switch-role-reviewer").addEventListener("click", showRoleModal);
-document.getElementById("modal-btn-cancel").addEventListener("click", hideRoleModal);
-document.getElementById("modal-btn-annotator").addEventListener("click", () => switchToRole("annotator"));
-document.getElementById("modal-btn-reviewer").addEventListener("click", () => switchToRole("reviewer"));
-
-document.getElementById("btn-refresh-videos").addEventListener("click", () => {
-  send({ type: "list_videos" });
-});
-
-btnPlayPause.addEventListener("click", togglePlayPause);
 
 video.addEventListener("play", updatePlayPauseButton);
 video.addEventListener("pause", updatePlayPauseButton);

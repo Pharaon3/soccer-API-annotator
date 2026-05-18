@@ -13,12 +13,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field, HttpUrl
 
-import auth as auth_store
-from auth import init_db, verify_api_key
+from auth import (
+    AUTH_COOKIE_NAME,
+    APP_PASSWORD_HASH,
+    create_session,
+    revoke_session,
+    verify_api_key,
+    verify_password_hash,
+    verify_session,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -55,6 +62,18 @@ CACHE_DELAY_MIN_SEC = 10
 CACHE_DELAY_MAX_SEC = 15
 SEGMENT_WINDOW_SEC = 30
 RESPONSE_TIMEOUT_SEC = 22
+TEST_INTERVAL_SEC = 60
+
+
+def _remove_annotation_event(
+    events: list[dict[str, Any]], time_sec: float, label: str
+) -> bool:
+    target_t = round(float(time_sec), 2)
+    for i, event in enumerate(events):
+        if event.get("time_sec") == target_t and event.get("label") == label:
+            events.pop(i)
+            return True
+    return False
 
 
 def url_key(video_url: str) -> str:
@@ -87,33 +106,104 @@ class AnnotateRequest(BaseModel):
     video_url: HttpUrl
 
 
-class SignupRequest(BaseModel):
-    username: str = Field(min_length=3, max_length=64)
-    password: str = Field(min_length=6, max_length=128)
+class VerifyHashRequest(BaseModel):
+    password_hash: str = Field(min_length=64, max_length=64)
 
 
-class LoginRequest(BaseModel):
-    username: str
-    password: str
+def _auth_token(request: Request) -> str | None:
+    return request.cookies.get(AUTH_COOKIE_NAME)
+
+
+def _require_auth(request: Request) -> str:
+    token = _auth_token(request)
+    if not verify_session(token):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return token or ""
 
 
 class ConnectionManager:
     def __init__(self) -> None:
+        self.connections: set[WebSocket] = set()
+        self.participants: dict[int, AnnotatorSession] = {}
         self.annotators: dict[int, AnnotatorSession] = {}
+        self.test_annotators: dict[int, AnnotatorSession] = {}
         self.reviewers: set[WebSocket] = set()
-        self.admins: set[WebSocket] = set()
-        self._next_annotator_id = 0
+        self._next_participant_id = 0
+        self._next_test_round_at: float | None = None
 
     @property
     def annotator_count(self) -> int:
-        return len(self.annotators)
+        """All connected annotator-capable clients (annotate, test, review pages)."""
+        return len(self.participants)
+
+    @property
+    def test_annotator_count(self) -> int:
+        return len(self.test_annotators)
+
+    def _new_participant(self, ws: WebSocket) -> AnnotatorSession:
+        self._next_participant_id += 1
+        session = AnnotatorSession(
+            websocket=ws, annotator_id=self._next_participant_id
+        )
+        self.participants[session.annotator_id] = session
+        return session
+
+    def schedule_next_test_round(self, at: float | None = None) -> float:
+        if at is None:
+            now = time.time()
+            at = now + (TEST_INTERVAL_SEC - (now % TEST_INTERVAL_SEC))
+        self._next_test_round_at = at
+        return at
 
     async def register_annotator(self, ws: WebSocket) -> AnnotatorSession:
-        self._next_annotator_id += 1
-        session = AnnotatorSession(websocket=ws, annotator_id=self._next_annotator_id)
+        session = self._new_participant(ws)
         self.annotators[session.annotator_id] = session
         await self._broadcast_annotator_count()
         return session
+
+    async def register_test_annotator(self, ws: WebSocket) -> AnnotatorSession:
+        session = self._new_participant(ws)
+        self.test_annotators[session.annotator_id] = session
+        await self._broadcast_annotator_count()
+        return session
+
+    async def register_reviewer(self, ws: WebSocket) -> AnnotatorSession:
+        session = self._new_participant(ws)
+        self.reviewers.add(ws)
+        await self._broadcast_annotator_count()
+        return session
+
+    async def send_test_schedule(self, ws: WebSocket) -> None:
+        if self._next_test_round_at is None:
+            self.schedule_next_test_round()
+        await ws.send_text(
+            json.dumps(
+                {
+                    "type": "test_schedule",
+                    "next_round_at": self._next_test_round_at,
+                    "interval_sec": TEST_INTERVAL_SEC,
+                }
+            )
+        )
+
+    async def broadcast_test_schedule(self) -> None:
+        if self._next_test_round_at is None:
+            self.schedule_next_test_round()
+        msg = json.dumps(
+            {
+                "type": "test_schedule",
+                "next_round_at": self._next_test_round_at,
+                "interval_sec": TEST_INTERVAL_SEC,
+            }
+        )
+        dead: list[int] = []
+        for aid, session in self.test_annotators.items():
+            try:
+                await session.websocket.send_text(msg)
+            except Exception:
+                dead.append(aid)
+        for aid in dead:
+            del self.test_annotators[aid]
 
     async def unregister(self, ws: WebSocket) -> None:
         await self.leave_role(ws)
@@ -124,54 +214,48 @@ class ConnectionManager:
         ]
         for aid in to_remove:
             del self.annotators[aid]
+        test_remove = [
+            aid for aid, s in self.test_annotators.items() if s.websocket is ws
+        ]
+        for aid in test_remove:
+            del self.test_annotators[aid]
         self.reviewers.discard(ws)
-        self.admins.discard(ws)
-        if to_remove:
+        participant_remove = [
+            aid for aid, s in self.participants.items() if s.websocket is ws
+        ]
+        for aid in participant_remove:
+            del self.participants[aid]
+        if participant_remove:
             await self._broadcast_annotator_count()
-
-    def register_admin(self, ws: WebSocket) -> None:
-        self.admins.add(ws)
-
-    async def notify_signup_pending(self, user: dict[str, Any]) -> None:
-        msg = json.dumps({"type": "signup_pending", "user": user})
-        dead: set[WebSocket] = set()
-        for ws in self.admins:
-            try:
-                await ws.send_text(msg)
-            except Exception:
-                dead.add(ws)
-        self.admins -= dead
-
-    async def notify_pending_list_changed(self) -> None:
-        pending = auth_store.list_pending_users()
-        msg = json.dumps({"type": "pending_list", "users": pending})
-        dead: set[WebSocket] = set()
-        for ws in self.admins:
-            try:
-                await ws.send_text(msg)
-            except Exception:
-                dead.add(ws)
-        self.admins -= dead
 
     async def _broadcast_annotator_count(self) -> None:
         count = self.annotator_count
         msg = json.dumps({"type": "annotator_count", "count": count})
         dead: list[int] = []
-        for aid, session in self.annotators.items():
+        for aid, session in self.participants.items():
             try:
                 await session.websocket.send_text(msg)
             except Exception:
                 dead.append(aid)
         for aid in dead:
-            del self.annotators[aid]
+            await self._drop_participant(aid)
 
-    def rank_of(self, annotator_id: int) -> int:
-        ordered = sorted(self.annotators.keys())
-        return ordered.index(annotator_id) + 1
+    async def _drop_participant(self, participant_id: int) -> None:
+        session = self.participants.pop(participant_id, None)
+        if not session:
+            return
+        ws = session.websocket
+        self.annotators.pop(participant_id, None)
+        self.test_annotators.pop(participant_id, None)
+        self.reviewers.discard(ws)
 
-    def start_offset_for(self, annotator_index: int) -> float:
+    def rank_of_participant(self, participant_id: int) -> int:
+        ordered = sorted(self.participants.keys())
+        return ordered.index(participant_id) + 1
+
+    def start_offset_for(self, annotator_index: int, total: int | None = None) -> float:
         """annotator_index is 1-based (y)."""
-        x = max(self.annotator_count, 1)
+        x = max(total if total is not None else self.annotator_count, 1)
         return SEGMENT_WINDOW_SEC / x * (annotator_index - 1)
 
     async def broadcast_annotate_job(
@@ -186,10 +270,10 @@ class ConnectionManager:
         }
         dead: list[int] = []
         sorted_sessions = sorted(
-            self.annotators.values(), key=lambda s: s.annotator_id
+            self.participants.values(), key=lambda s: s.annotator_id
         )
         for rank, session in enumerate(sorted_sessions, start=1):
-            start_offset = self.start_offset_for(rank)
+            start_offset = self.start_offset_for(rank, total=x)
             payload = {
                 **payload_base,
                 "annotator_index": rank,
@@ -202,20 +286,38 @@ class ConnectionManager:
             except Exception:
                 dead.append(session.annotator_id)
         for aid in dead:
-            del self.annotators[aid]
+            await self._drop_participant(aid)
 
-        alert = {
-            **payload_base,
+    async def broadcast_test_job(
+        self, job_id: str, video_key: str, video_url: str
+    ) -> None:
+        x = max(self.test_annotator_count, 1)
+        payload_base = {
+            "type": "test_start",
+            "job_id": job_id,
+            "video_url": video_url,
+            "original_url": video_url,
+            "video_key": video_key,
             "duration_sec": ANNOTATE_DURATION_SEC,
-            "needs_role_switch": True,
         }
-        dead_reviewers: set[WebSocket] = set()
-        for ws in list(self.reviewers):
+        dead: list[int] = []
+        sorted_sessions = sorted(
+            self.test_annotators.values(), key=lambda s: s.annotator_id
+        )
+        for rank, session in enumerate(sorted_sessions, start=1):
+            start_offset = self.start_offset_for(rank, total=x)
+            payload = {
+                **payload_base,
+                "annotator_index": rank,
+                "annotator_total": x,
+                "start_offset_sec": start_offset,
+            }
             try:
-                await ws.send_text(json.dumps(alert))
+                await session.websocket.send_text(json.dumps(payload))
             except Exception:
-                dead_reviewers.add(ws)
-        self.reviewers -= dead_reviewers
+                dead.append(session.annotator_id)
+        for aid in dead:
+            del self.test_annotators[aid]
 
     async def notify_reviewers_video_saved(self, video_key: str) -> None:
         msg = json.dumps({"type": "videos_updated"})
@@ -231,32 +333,65 @@ class ConnectionManager:
 manager = ConnectionManager()
 active_jobs: dict[str, ActiveJob] = {}
 job_events: dict[str, list[dict[str, Any]]] = {}
-
-init_db()
+active_test_jobs: set[str] = set()
+test_job_events: dict[str, list[dict[str, Any]]] = {}
 
 app = FastAPI(title="Soccer Annotator API")
 
 
-def _bearer_token(authorization: str | None = Header(None)) -> str | None:
-    if authorization and authorization.lower().startswith("bearer "):
-        return authorization[7:].strip()
-    return None
+async def run_test_round() -> None:
+    videos = _list_videos_data()
+    if not videos:
+        manager.schedule_next_test_round()
+        await manager.broadcast_test_schedule()
+        return
+
+    if manager.test_annotator_count == 0:
+        manager.schedule_next_test_round()
+        await manager.broadcast_test_schedule()
+        return
+
+    with_url = [v for v in videos if v.get("video_url")]
+    if not with_url:
+        manager.schedule_next_test_round()
+        await manager.broadcast_test_schedule()
+        return
+
+    item = random.choice(with_url)
+    video_key = item["video_key"]
+    remote_url = item["video_url"]
+    job_id = f"test-{video_key}-{int(time.time() * 1000)}"
+    active_test_jobs.add(job_id)
+    test_job_events[job_id] = []
+
+    await manager.broadcast_test_job(job_id, video_key, remote_url)
+    await asyncio.sleep(ANNOTATE_DURATION_SEC)
+
+    active_test_jobs.discard(job_id)
+    test_job_events.pop(job_id, None)
+    manager.schedule_next_test_round()
+    await manager.broadcast_test_schedule()
 
 
-def require_user(authorization: str | None = Header(None)) -> dict[str, Any]:
-    token = _bearer_token(authorization)
-    session = auth_store.get_session(token or "")
-    if session is None or session["is_admin"]:
-        raise HTTPException(status_code=401, detail="Not authenticated")
-    return session
+async def _test_scheduler_loop() -> None:
+    manager.schedule_next_test_round()
+    await manager.broadcast_test_schedule()
+    while True:
+        if manager._next_test_round_at is None:
+            manager.schedule_next_test_round()
+        wait = max(0.0, manager._next_test_round_at - time.time())
+        await asyncio.sleep(wait)
+        try:
+            await run_test_round()
+        except Exception:
+            logger.exception("Test round failed")
+            manager.schedule_next_test_round()
+            await manager.broadcast_test_schedule()
 
 
-def require_admin(authorization: str | None = Header(None)) -> dict[str, Any]:
-    token = _bearer_token(authorization)
-    session = auth_store.get_session(token or "")
-    if session is None or not session["is_admin"]:
-        raise HTTPException(status_code=403, detail="Admin access required")
-    return session
+@app.on_event("startup")
+async def _start_test_scheduler() -> None:
+    asyncio.create_task(_test_scheduler_loop())
 
 
 def cache_paths(video_key: str) -> tuple[Path, Path, Path]:
@@ -350,98 +485,6 @@ async def _ensure_video_downloaded(video_url: str, video_path: Path) -> None:
     await download_video(video_url, video_path)
 
 
-@app.post("/api/auth/signup")
-async def signup(body: SignupRequest) -> JSONResponse:
-    try:
-        user = auth_store.create_user(body.username, body.password)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    await manager.notify_signup_pending(user)
-    return JSONResponse(
-        content={
-            "message": "Signup received. Wait for admin approval before logging in.",
-            "username": user["username"],
-            "status": user["status"],
-        }
-    )
-
-
-@app.post("/api/auth/login")
-async def login(body: LoginRequest) -> JSONResponse:
-    try:
-        token, profile = auth_store.login_user(body.username, body.password)
-    except ValueError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-    return JSONResponse(content={"token": token, "user": profile})
-
-
-async def _admin_login_handler(body: LoginRequest) -> JSONResponse:
-    try:
-        token, profile = auth_store.login_admin(body.username, body.password)
-    except ValueError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-    return JSONResponse(content={"token": token, "user": profile})
-
-
-@app.post("/api/auth/admin/login")
-@app.post("/api/auth/admin/login/")
-@app.post("/api/admin/login")
-async def admin_login(body: LoginRequest) -> JSONResponse:
-    return await _admin_login_handler(body)
-
-
-@app.post("/api/auth/logout")
-async def logout(authorization: str | None = Header(None)) -> JSONResponse:
-    token = _bearer_token(authorization)
-    if token:
-        auth_store.delete_session(token)
-    return JSONResponse(content={"ok": True})
-
-
-@app.get("/api/auth/me")
-async def me(session: dict[str, Any] = Depends(require_user)) -> dict[str, Any]:
-    user = auth_store.get_user_by_id(session["user_id"])
-    return {
-        "username": session["username"],
-        "is_admin": False,
-        "status": user["status"] if user else "approved",
-    }
-
-
-@app.get("/api/auth/admin/me")
-async def admin_me(session: dict[str, Any] = Depends(require_admin)) -> dict[str, Any]:
-    return {"username": session["username"], "is_admin": True}
-
-
-@app.get("/api/admin/pending")
-async def admin_pending(
-    _session: dict[str, Any] = Depends(require_admin),
-) -> list[dict[str, Any]]:
-    return auth_store.list_pending_users()
-
-
-@app.post("/api/admin/users/{user_id}/approve")
-async def approve_user(
-    user_id: int, _session: dict[str, Any] = Depends(require_admin)
-) -> JSONResponse:
-    user = auth_store.set_user_status(user_id, "approved")
-    if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    await manager.notify_pending_list_changed()
-    return JSONResponse(content=user)
-
-
-@app.post("/api/admin/users/{user_id}/reject")
-async def reject_user(
-    user_id: int, _session: dict[str, Any] = Depends(require_admin)
-) -> JSONResponse:
-    user = auth_store.set_user_status(user_id, "rejected")
-    if user is None:
-        raise HTTPException(status_code=404, detail="User not found")
-    await manager.notify_pending_list_changed()
-    return JSONResponse(content=user)
-
-
 @app.post("/api/annotate")
 async def annotate(
     body: AnnotateRequest,
@@ -460,7 +503,7 @@ async def annotate(
     if manager.annotator_count == 0:
         raise HTTPException(
             status_code=503,
-            detail="No annotators connected. Open the web form as annotator first.",
+            detail="No annotators connected. Open the web UI (annotate, test, or review) first.",
         )
 
     try:
@@ -472,10 +515,7 @@ async def annotate(
     return JSONResponse(content=result)
 
 
-@app.get("/api/videos")
-async def list_videos(
-    _session: dict[str, Any] = Depends(require_user),
-) -> list[dict[str, Any]]:
+def _list_videos_data() -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for meta_file in sorted(ANNOTATIONS_DIR.glob("*.meta.json")):
         meta = json.loads(meta_file.read_text(encoding="utf-8"))
@@ -498,8 +538,44 @@ async def list_videos(
     return items
 
 
+@app.post("/api/auth/verify")
+async def auth_verify(body: VerifyHashRequest) -> JSONResponse:
+    if not verify_password_hash(body.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid password")
+    token = create_session()
+    response = JSONResponse(content={"ok": True})
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        token,
+        httponly=True,
+        samesite="lax",
+        max_age=60 * 60 * 24 * 7,
+    )
+    return response
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request) -> JSONResponse:
+    revoke_session(_auth_token(request))
+    response = JSONResponse(content={"ok": True})
+    response.delete_cookie(AUTH_COOKIE_NAME)
+    return response
+
+
+@app.get("/api/auth/status")
+async def auth_status(request: Request) -> dict[str, bool]:
+    return {"authenticated": verify_session(_auth_token(request))}
+
+
+@app.get("/api/videos")
+async def list_videos(request: Request) -> list[dict[str, Any]]:
+    _require_auth(request)
+    return _list_videos_data()
+
+
 @app.get("/api/videos/{video_key}/file")
-async def get_video_file(video_key: str) -> FileResponse:
+async def get_video_file(video_key: str, request: Request) -> FileResponse:
+    _require_auth(request)
     path = VIDEOS_DIR / f"{video_key}.mp4"
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Video not found")
@@ -507,7 +583,8 @@ async def get_video_file(video_key: str) -> FileResponse:
 
 
 @app.get("/api/videos/{video_key}/annotations")
-async def get_annotations(video_key: str) -> dict[str, Any]:
+async def get_annotations(video_key: str, request: Request) -> dict[str, Any]:
+    _require_auth(request)
     path = ANNOTATIONS_DIR / f"{video_key}.json"
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Annotations not found")
@@ -515,14 +592,19 @@ async def get_annotations(video_key: str) -> dict[str, Any]:
 
 
 @app.get("/api/labels")
-async def get_labels() -> list[str]:
+async def get_labels(request: Request) -> list[str]:
+    _require_auth(request)
     return LABELS
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
+    if not verify_session(websocket.cookies.get(AUTH_COOKIE_NAME)):
+        await websocket.accept()
+        await websocket.close(code=1008, reason="Not authenticated")
+        return
     await websocket.accept()
-    session: dict[str, Any] | None = None
+    manager.connections.add(websocket)
     role: str | None = None
     annotator_session: AnnotatorSession | None = None
 
@@ -532,52 +614,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             data = json.loads(raw)
             msg_type = data.get("type")
 
-            if msg_type == "auth":
-                token = data.get("token", "")
-                session = auth_store.get_session(token)
-                if session is None:
-                    await websocket.send_text(
-                        json.dumps({"type": "auth_error", "detail": "Invalid session"})
-                    )
-                    continue
-                if session["is_admin"]:
-                    manager.register_admin(websocket)
-                    pending = auth_store.list_pending_users()
-                    await websocket.send_text(
-                        json.dumps(
-                            {
-                                "type": "auth_ok",
-                                "user": {
-                                    "username": session["username"],
-                                    "is_admin": True,
-                                },
-                                "pending_users": pending,
-                            }
-                        )
-                    )
-                else:
-                    await websocket.send_text(
-                        json.dumps(
-                            {
-                                "type": "auth_ok",
-                                "user": {
-                                    "username": session["username"],
-                                    "is_admin": False,
-                                },
-                            }
-                        )
-                    )
-                continue
-
-            if session is None:
-                await websocket.send_text(
-                    json.dumps({"type": "auth_required"})
-                )
-                continue
-
             if msg_type == "set_role":
-                if session["is_admin"]:
-                    continue
                 new_role = data.get("role")
                 if role is not None:
                     await manager.leave_role(websocket)
@@ -585,7 +622,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 role = new_role
                 if role == "annotator":
                     annotator_session = await manager.register_annotator(websocket)
-                    rank = manager.rank_of(annotator_session.annotator_id)
+                    rank = manager.rank_of_participant(annotator_session.annotator_id)
                     x = manager.annotator_count
                     await websocket.send_text(
                         json.dumps(
@@ -595,48 +632,66 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                                 "annotator_id": annotator_session.annotator_id,
                                 "annotator_index": rank,
                                 "annotator_total": x,
-                                "start_offset_sec": manager.start_offset_for(rank),
+                                "start_offset_sec": manager.start_offset_for(
+                                    rank, total=x
+                                ),
                             }
                         )
                     )
                 elif role == "reviewer":
-                    manager.reviewers.add(websocket)
-                    videos = await list_videos()
+                    reviewer_session = await manager.register_reviewer(websocket)
+                    rank = manager.rank_of_participant(reviewer_session.annotator_id)
+                    x = manager.annotator_count
+                    videos = _list_videos_data()
                     await websocket.send_text(
                         json.dumps(
-                            {"type": "role_ack", "role": "reviewer", "videos": videos}
+                            {
+                                "type": "role_ack",
+                                "role": "reviewer",
+                                "videos": videos,
+                                "annotator_id": reviewer_session.annotator_id,
+                                "annotator_index": rank,
+                                "annotator_total": x,
+                                "start_offset_sec": manager.start_offset_for(
+                                    rank, total=x
+                                ),
+                            }
                         )
                     )
-                continue
-
-            if msg_type == "admin_pending" and session["is_admin"]:
-                pending = auth_store.list_pending_users()
-                await websocket.send_text(
-                    json.dumps({"type": "pending_list", "users": pending})
-                )
-                continue
-
-            if msg_type == "admin_approve" and session["is_admin"]:
-                uid = int(data.get("user_id", 0))
-                user = auth_store.set_user_status(uid, "approved")
-                if user:
-                    await manager.notify_pending_list_changed()
+                elif role == "test":
+                    annotator_session = await manager.register_test_annotator(websocket)
+                    rank = manager.rank_of_participant(annotator_session.annotator_id)
+                    x = manager.annotator_count
                     await websocket.send_text(
-                        json.dumps({"type": "user_approved", "user": user})
+                        json.dumps(
+                            {
+                                "type": "role_ack",
+                                "role": "test",
+                                "annotator_id": annotator_session.annotator_id,
+                                "annotator_index": rank,
+                                "annotator_total": x,
+                                "start_offset_sec": manager.start_offset_for(
+                                    rank, total=x
+                                ),
+                            }
+                        )
                     )
+                    await manager.send_test_schedule(websocket)
                 continue
 
-            if msg_type == "admin_reject" and session["is_admin"]:
-                uid = int(data.get("user_id", 0))
-                user = auth_store.set_user_status(uid, "rejected")
-                if user:
-                    await manager.notify_pending_list_changed()
-                    await websocket.send_text(
-                        json.dumps({"type": "user_rejected", "user": user})
-                    )
+            if msg_type == "annotation" and role == "test":
+                job_id = data.get("job_id")
+                label = data.get("label")
+                time_sec = data.get("time_sec")
+                if label not in LABELS:
+                    continue
+                if job_id not in active_test_jobs:
+                    continue
+                event = {"time_sec": round(float(time_sec), 2), "label": label}
+                test_job_events.setdefault(job_id, []).append(event)
                 continue
 
-            if msg_type == "annotation" and role == "annotator":
+            if msg_type == "annotation" and role in ("annotator", "reviewer"):
                 job_id = data.get("job_id")
                 label = data.get("label")
                 time_sec = data.get("time_sec")
@@ -651,8 +706,28 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         active_jobs[job_id].events.append(event)
                 continue
 
+            if msg_type == "annotation_remove" and role in ("annotator", "test", "reviewer"):
+                job_id = data.get("job_id")
+                label = data.get("label")
+                time_sec = data.get("time_sec")
+                if label not in LABELS or not job_id:
+                    continue
+                if role == "test":
+                    if job_id in test_job_events:
+                        _remove_annotation_event(
+                            test_job_events[job_id], time_sec, label
+                        )
+                elif job_id in job_events:
+                    _remove_annotation_event(job_events[job_id], time_sec, label)
+                    if job_id in active_jobs:
+                        async with active_jobs[job_id].lock:
+                            _remove_annotation_event(
+                                active_jobs[job_id].events, time_sec, label
+                            )
+                continue
+
             if msg_type == "list_videos" and role == "reviewer":
-                videos = await list_videos()
+                videos = _list_videos_data()
                 await websocket.send_text(
                     json.dumps({"type": "videos_list", "videos": videos})
                 )
@@ -660,6 +735,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        manager.connections.discard(websocket)
         await manager.unregister(websocket)
 
 
@@ -673,14 +749,61 @@ def _static_file(name: str) -> FileResponse:
     return FileResponse(path, media_type=media)
 
 
+def _escape_js_string(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r", "")
+        .replace("\n", "\\n")
+        .replace("<", "\\u003c")
+    )
+
+
+def _serve_login_page() -> Response:
+    html_path = STATIC_DIR / "login.html"
+    if not html_path.is_file():
+        raise HTTPException(status_code=404, detail="login.html not found")
+    html = html_path.read_text(encoding="utf-8")
+    if not APP_PASSWORD_HASH:
+        raise HTTPException(status_code=500, detail="APP_PASSWORD_HASH not configured")
+    inject = (
+        f'<script>window.APP_PASSWORD_HASH="{_escape_js_string(APP_PASSWORD_HASH)}";</script>'
+    )
+    if "</head>" in html:
+        html = html.replace("</head>", f"  {inject}\n</head>", 1)
+    else:
+        html = inject + html
+    return Response(content=html, media_type="text/html")
+
+
 @app.get("/")
-async def serve_index() -> FileResponse:
+async def serve_root(request: Request) -> Response:
+    if verify_session(_auth_token(request)):
+        return RedirectResponse(url="/app", status_code=302)
+    return _serve_login_page()
+
+
+@app.get("/app")
+async def serve_app(request: Request) -> FileResponse:
+    _require_auth(request)
     return _static_file("index.html")
 
 
+@app.get("/app/test")
+async def serve_test_app(request: Request) -> FileResponse:
+    _require_auth(request)
+    return _static_file("test.html")
+
+
 @app.get("/app.js")
-async def serve_app_js() -> FileResponse:
+async def serve_app_js(request: Request) -> FileResponse:
+    _require_auth(request)
     return _static_file("app.js")
+
+
+@app.get("/login.js")
+async def serve_login_js() -> FileResponse:
+    return _static_file("login.js")
 
 
 @app.get("/styles.css")
