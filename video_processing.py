@@ -7,7 +7,6 @@ import logging
 import shutil
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-
 logger = logging.getLogger(__name__)
 
 SEGMENT_WINDOW_SEC = 30
@@ -102,6 +101,9 @@ async def ffmpeg_cut(
         )
 
 
+OnSegmentReady = Callable[[int, Path], Awaitable[None]]
+
+
 async def prepare_job_video_segments(
     job_dir: Path,
     video_url: str,
@@ -109,6 +111,7 @@ async def prepare_job_video_segments(
     download_video: Callable[[str, Path], Awaitable[None]],
     *,
     local_source: Path | None = None,
+    on_segment_ready: OnSegmentReady | None = None,
 ) -> dict[int, Path]:
     """Download source, extract 30s window, cut one MP4 per user rank."""
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -123,12 +126,24 @@ async def prepare_job_video_segments(
 
     total = max(total_users, 1)
     paths: dict[int, Path] = {}
-    for rank in range(1, total + 1):
+
+    async def cut_rank(rank: int) -> tuple[int, Path]:
         start, end = segment_bounds(rank, total)
         out = job_dir / f"seg_{rank}.mp4"
         await ffmpeg_cut(window, out, start, end - start)
-        paths[rank] = out
-    return paths
+        return rank, out
+
+    if on_segment_ready:
+        for rank in range(1, total + 1):
+            r, out = await cut_rank(rank)
+            paths[r] = out
+            await on_segment_ready(r, out)
+        return paths
+
+    results = await asyncio.gather(
+        *[cut_rank(rank) for rank in range(1, total + 1)]
+    )
+    return dict(results)
 
 
 def cleanup_job_dir(job_dir: Path) -> None:
