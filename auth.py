@@ -21,6 +21,16 @@ SESSION_TTL_SEC = 60 * 60 * 24 * 7
 _sessions: dict[str, float] = {}
 
 
+def auth_cookie_params() -> dict[str, bool | str]:
+    secure = os.getenv("COOKIE_SECURE", "").lower() in ("1", "true", "yes")
+    return {
+        "httponly": True,
+        "samesite": "lax",
+        "path": "/",
+        "secure": secure,
+    }
+
+
 def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 

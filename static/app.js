@@ -166,10 +166,40 @@ function isAnnotatingRole() {
 
 function clearSession() {
   wsAuthed = false;
+  wsConnectingPromise = null;
   if (ws) {
     ws.close();
     ws = null;
   }
+}
+
+function redirectToLogin() {
+  clearSession();
+  window.location.replace("/");
+}
+
+function hideAppBoot() {
+  document.body.classList.add("app-ready");
+}
+
+async function checkAuthStatus() {
+  try {
+    const res = await fetch("/api/auth/status", { credentials: "same-origin" });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return !!data.authenticated;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureAuthenticated() {
+  const ok = await checkAuthStatus();
+  if (!ok) {
+    redirectToLogin();
+    return false;
+  }
+  return true;
 }
 
 async function apiFetch(url, options = {}) {
@@ -183,7 +213,7 @@ async function apiFetch(url, options = {}) {
     credentials: "same-origin",
   });
   if (res.status === 401) {
-    window.location.href = "/";
+    redirectToLogin();
     throw new Error("Not authenticated");
   }
   return res;
@@ -197,7 +227,7 @@ async function logout() {
   } catch {
     /* ignore */
   }
-  window.location.href = "/";
+  redirectToLogin();
 }
 
 function stopApiCountdown(hide = false) {
@@ -521,9 +551,13 @@ function connectWebSocket() {
 
     ws.onmessage = (ev) => handleMessage(JSON.parse(ev.data));
 
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       wsAuthed = false;
       wsConnectingPromise = null;
+      if (ev.code === 1008) {
+        redirectToLogin();
+        return;
+      }
       if (roleStatus) roleStatus.textContent = "Disconnected. Refresh the page.";
     };
   });
@@ -1101,8 +1135,6 @@ document.addEventListener(
 
 requestNotificationPermission();
 
-document.getElementById("btn-logout")?.addEventListener("click", logout);
-
 async function resumePendingAnnotateJob() {
   const raw = sessionStorage.getItem(PENDING_ANNOTATE_KEY);
   if (!raw) return false;
@@ -1146,20 +1178,30 @@ function bindRoleScreenHandlers() {
   });
 }
 
-if (IS_TEST_PAGE) {
-  document.body.classList.add("no-scroll");
-  buildLabelButtons();
-  enterRole("test");
-} else {
-  (async () => {
-    const resumed = await resumePendingAnnotateJob();
-    if (!resumed) {
-      connectWebSocket().catch(() => {});
-      showScreen(roleScreen);
-    }
-    bindRoleScreenHandlers();
-  })();
+async function bootApp() {
+  if (!(await ensureAuthenticated())) return;
+
+  hideAppBoot();
+  bindRoleScreenHandlers();
+  document.querySelectorAll("#btn-logout, [data-action=logout]").forEach((btn) => {
+    btn.addEventListener("click", logout);
+  });
+
+  if (IS_TEST_PAGE) {
+    document.body.classList.add("no-scroll");
+    buildLabelButtons();
+    await enterRole("test");
+    return;
+  }
+
+  const resumed = await resumePendingAnnotateJob();
+  if (!resumed) {
+    connectWebSocket().catch(() => {});
+    showScreen(roleScreen);
+  }
 }
+
+bootApp();
 
 btnPlayPause?.addEventListener("click", togglePlayPause);
 

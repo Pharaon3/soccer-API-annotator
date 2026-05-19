@@ -26,6 +26,8 @@ from pydantic import BaseModel, Field, HttpUrl
 from auth import (
     APP_PASSWORD_HASH,
     AUTH_COOKIE_NAME,
+    SESSION_TTL_SEC,
+    auth_cookie_params,
     create_session,
     revoke_session,
     verify_api_key,
@@ -179,6 +181,14 @@ def _require_auth(request: Request) -> str:
     if not verify_session(token):
         raise HTTPException(status_code=401, detail="Not authenticated")
     return token or ""
+
+
+def _is_authenticated(request: Request) -> bool:
+    return verify_session(_auth_token(request))
+
+
+def _login_redirect() -> RedirectResponse:
+    return RedirectResponse(url="/", status_code=302)
 
 
 class ConnectionManager:
@@ -939,10 +949,8 @@ async def auth_verify(body: VerifyHashRequest) -> JSONResponse:
     response.set_cookie(
         AUTH_COOKIE_NAME,
         token,
-        httponly=True,
-        samesite="lax",
-        max_age=60 * 60 * 24 * 7,
-        secure=os.getenv("COOKIE_SECURE", "").lower() in ("1", "true", "yes"),
+        max_age=SESSION_TTL_SEC,
+        **auth_cookie_params(),
     )
     return response
 
@@ -951,7 +959,7 @@ async def auth_verify(body: VerifyHashRequest) -> JSONResponse:
 async def auth_logout(request: Request) -> JSONResponse:
     revoke_session(_auth_token(request))
     response = JSONResponse(content={"ok": True})
-    response.delete_cookie(AUTH_COOKIE_NAME)
+    response.delete_cookie(AUTH_COOKIE_NAME, **auth_cookie_params())
     return response
 
 
@@ -1217,26 +1225,27 @@ def _serve_login_page() -> Response:
 
 @app.get("/")
 async def serve_root(request: Request) -> Response:
-    if verify_session(_auth_token(request)):
+    if _is_authenticated(request):
         return RedirectResponse(url="/app", status_code=302)
     return _serve_login_page()
 
 
 @app.get("/app")
-async def serve_app(request: Request) -> FileResponse:
-    _require_auth(request)
+async def serve_app(request: Request) -> Response:
+    if not _is_authenticated(request):
+        return _login_redirect()
     return _static_file("index.html")
 
 
 @app.get("/app/test")
-async def serve_test_app(request: Request) -> FileResponse:
-    _require_auth(request)
+async def serve_test_app(request: Request) -> Response:
+    if not _is_authenticated(request):
+        return _login_redirect()
     return _static_file("test.html")
 
 
 @app.get("/app.js")
-async def serve_app_js(request: Request) -> FileResponse:
-    _require_auth(request)
+async def serve_app_js() -> FileResponse:
     return _static_file("app.js")
 
 

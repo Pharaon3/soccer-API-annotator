@@ -6,15 +6,18 @@
   <title>Login — Soccer Annotator</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
-<body>
+<body class="page-login">
   <div class="card auth-card">
     <h1>Soccer Annotator</h1>
     <p class="subtitle">Enter password to continue</p>
     <form id="login-form" class="auth-form">
-      <label>Password<input type="password" id="login-password" autocomplete="current-password" required /></label>
+      <label>
+        Password
+        <input type="password" id="login-password" autocomplete="current-password" required />
+      </label>
       <button type="submit" class="role-btn primary">Log in</button>
     </form>
-    <p id="auth-message" class="status-text"></p>
+    <p id="auth-message" class="status-text" role="alert"></p>
   </div>
   <script src="/login.js"></script>
 </body>

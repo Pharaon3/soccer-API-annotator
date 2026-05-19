@@ -7,7 +7,14 @@
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body class="page-test" data-page="test">
-  <div id="annotator-screen" class="screen active">
+  <div id="app-boot" class="app-boot" aria-live="polite">
+    <div class="app-boot-card">
+      <div class="app-boot-spinner" aria-hidden="true"></div>
+      <p class="app-boot-text">Loading…</p>
+    </div>
+  </div>
+
+  <div id="annotator-screen" class="screen">
     <div class="annotator-layout">
       <div class="annotator-main">
         <main class="video-wrap">
