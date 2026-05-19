@@ -24,6 +24,7 @@ from auth import (
     revoke_session,
     verify_api_key,
     verify_password_hash,
+    verify_password_plain,
     verify_session,
 )
 
@@ -107,7 +108,8 @@ class AnnotateRequest(BaseModel):
 
 
 class VerifyHashRequest(BaseModel):
-    password_hash: str = Field(min_length=64, max_length=64)
+    password_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    password: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 def _auth_token(request: Request) -> str | None:
@@ -595,6 +597,9 @@ async def annotate(
     except httpx.HTTPError as exc:
         logger.exception("Failed to download video")
         raise HTTPException(status_code=502, detail=f"Video download failed: {exc}") from exc
+    except RuntimeError as exc:
+        logger.exception("Video processing failed")
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     return JSONResponse(content=result)
 
@@ -624,7 +629,12 @@ def _list_videos_data() -> list[dict[str, Any]]:
 
 @app.post("/api/auth/verify")
 async def auth_verify(body: VerifyHashRequest) -> JSONResponse:
-    if not verify_password_hash(body.password_hash):
+    ok = False
+    if body.password_hash:
+        ok = verify_password_hash(body.password_hash)
+    elif body.password:
+        ok = verify_password_plain(body.password)
+    if not ok:
         raise HTTPException(status_code=401, detail="Invalid password")
     token = create_session()
     response = JSONResponse(content={"ok": True})
@@ -940,4 +950,10 @@ async def serve_styles() -> FileResponse:
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("server:app", host="0.0.0.0", port=8080, reload=True)
+    uvicorn.run(
+        "server:app",
+        host="0.0.0.0",
+        port=8080,
+        reload=True,
+        reload_excludes=["data/*", "data/**"],
+    )

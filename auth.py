@@ -26,7 +26,15 @@ def hash_password(password: str) -> str:
 
 
 def verify_password_hash(password_hash: str) -> bool:
-    return password_hash == "e74fc597d523748f08211da3ea48120f66a3a9e71581dfcbf5ae523366ae8072"
+    if not APP_PASSWORD_HASH:
+        return False
+    return secrets.compare_digest(password_hash.strip().lower(), APP_PASSWORD_HASH)
+
+
+def verify_password_plain(password: str) -> bool:
+    if not APP_PASSWORD_HASH:
+        return False
+    return secrets.compare_digest(hash_password(password), APP_PASSWORD_HASH)
 
 
 def create_session() -> str:
