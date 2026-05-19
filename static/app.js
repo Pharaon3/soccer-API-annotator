@@ -427,7 +427,7 @@ function waitForServerVideo(videoId) {
           }
         })
         .catch(() => {});
-    }, 500);
+    }, 2000);
   });
 }
 
