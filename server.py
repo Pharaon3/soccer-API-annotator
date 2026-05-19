@@ -74,6 +74,10 @@ CACHE_DELAY_MIN_SEC = 10
 CACHE_DELAY_MAX_SEC = 15
 SEGMENT_WINDOW_SEC = 30
 TEST_INTERVAL_SEC = 30
+# Segment outputs: half width/height (~1/4 pixels) plus H.264 compression
+SEGMENT_SCALE_DIVISOR = 2
+SEGMENT_CRF = 30
+SEGMENT_FFMPEG_PRESET = "veryfast"
 
 
 def segment_start_sec(rank: int, total: int) -> float:
@@ -517,8 +521,12 @@ def _log_video_saved(
     rank_part = f" rank={rank}" if rank is not None else ""
     step_part = f" step={step_duration:.2f}s" if step_duration is not None else ""
     cache_part = " (cached)" if cached else ""
+    size_part = ""
+    if path.is_file():
+        size_mb = path.stat().st_size / (1024 * 1024)
+        size_part = f" size={size_mb:.2f}MB"
     logger.info(
-        "Video timing job=%s video_id=%s%s %s file=%s%s elapsed_since_api=%.2fs%s",
+        "Video timing job=%s video_id=%s%s %s file=%s%s elapsed_since_api=%.2fs%s%s",
         job_id,
         video_id,
         rank_part,
@@ -527,20 +535,33 @@ def _log_video_saved(
         cache_part,
         _elapsed_since(api_started_at),
         step_part,
+        size_part,
     )
 
 
 async def split_video_segment(src: Path, dest: Path, start: float, duration: float) -> None:
-    if dest.is_file():
-        return
-
+    d = SEGMENT_SCALE_DIVISOR
+    scale = f"scale=trunc(iw/{d})*2:trunc(ih/{d})*2"
     cmd = [
         "ffmpeg",
         "-y",
-        "-ss", str(start),
-        "-i", str(src),
-        "-t", str(duration),
-        "-c", "copy",
+        "-ss",
+        str(start),
+        "-i",
+        str(src),
+        "-t",
+        str(duration),
+        "-vf",
+        scale,
+        "-c:v",
+        "libx264",
+        "-crf",
+        str(SEGMENT_CRF),
+        "-preset",
+        SEGMENT_FFMPEG_PRESET,
+        "-movflags",
+        "+faststart",
+        "-an",
         str(dest),
     ]
 
@@ -565,21 +586,33 @@ async def create_user_segments(
         start = segment_start_sec(rank, total)
         duration = segment_duration_sec(rank, total)
         dest = segment_video_path(video_id, rank)
-        already_exists = dest.is_file()
         step_started = time.time()
         await split_video_segment(video_path, dest, start, duration)
         _log_video_saved(
             job_id=job_id,
-            video_id=video_id,
+            video_id=segment_video_id(video_id, rank),
             label="segment",
             path=dest,
             api_started_at=api_started_at,
             step_duration=time.time() - step_started,
             rank=rank,
-            cached=already_exists,
         )
 
     await asyncio.gather(*[split_one(rank) for rank in range(1, total + 1)])
+
+    total_bytes = sum(
+        segment_video_path(video_id, rank).stat().st_size
+        for rank in range(1, total + 1)
+        if segment_video_path(video_id, rank).is_file()
+    )
+    logger.info(
+        "Video timing job=%s video_id=%s segments_total_size=%.2fMB elapsed_since_api=%.2fs",
+        job_id,
+        video_id,
+        total_bytes / (1024 * 1024),
+        _elapsed_since(api_started_at),
+    )
+
 
 def load_cached(video_url: str) -> dict[str, Any] | None:
     try:
@@ -646,6 +679,12 @@ async def run_annotate_job(video_url: str) -> dict[str, Any]:
 
     source_cached = video_path.is_file()
     download_started = time.time()
+    logger.info(
+        "Video timing job=%s video_id=%s download_start cached=%s",
+        job_id,
+        video_id,
+        source_cached,
+    )
     await ensure_video_downloaded(video_url, video_path)
     _log_video_saved(
         job_id=job_id,
@@ -658,6 +697,14 @@ async def run_annotate_job(video_url: str) -> dict[str, Any]:
     )
 
     segments_started = time.time()
+    logger.info(
+        "Video timing job=%s video_id=%s segment_encode_start count=%d scale=1/%d crf=%d",
+        job_id,
+        video_id,
+        x,
+        SEGMENT_SCALE_DIVISOR,
+        SEGMENT_CRF,
+    )
     await create_user_segments(
         video_id, video_path, x, job_id=job_id, api_started_at=started_at
     )

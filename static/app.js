@@ -98,6 +98,27 @@ let pendingTestJob = null;
 let nextTestRoundAtSec = null;
 let loadedVideoJobId = null;
 let videoPollAbort = null;
+const jobTimings = new Map();
+
+function startJobTiming(jobId, videoId) {
+  if (!jobId) return;
+  jobTimings.set(jobId, { videoId, t0: performance.now(), pollCount: 0 });
+  logJobTiming(jobId, "ws_job_received");
+}
+
+function logJobTiming(jobId, label, extra) {
+  const entry = jobTimings.get(jobId);
+  if (!entry) return;
+  const elapsedSec = (performance.now() - entry.t0) / 1000;
+  const suffix = extra != null ? ` ${JSON.stringify(extra)}` : "";
+  console.log(
+    `[annotator timing] job=${jobId} video=${entry.videoId} ${label} @ ${elapsedSec.toFixed(2)}s${suffix}`
+  );
+}
+
+function clearJobTiming(jobId) {
+  if (jobId) jobTimings.delete(jobId);
+}
 
 function wsUrl() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -333,6 +354,8 @@ function goToAnnotatorForJob(data) {
     redirectToAnnotatorForApiJob(data);
     return;
   }
+  startJobTiming(data.job_id, jobVideoId(data));
+  logJobTiming(data.job_id, "ui_prepare");
   hideRoleModal();
   buildLabelButtons();
   showScreen(annotatorScreen);
@@ -396,12 +419,17 @@ function stopVideoPoll() {
   }
 }
 
-function waitForServerVideo(videoId, secondsLeft = API_RESPONSE_SEC) {
+function waitForServerVideo(videoId, secondsLeft = API_RESPONSE_SEC, jobId = null) {
   stopVideoPoll();
 
   const path = serverVideoApiPath(videoId);
   const abort = { aborted: false, controllers: [] };
   videoPollAbort = abort;
+  const pollStarted = performance.now();
+
+  if (jobId) {
+    logJobTiming(jobId, "video_poll_start", { path, secondsLeft });
+  }
 
   return new Promise((resolve) => {
     let resolved = false;
@@ -413,11 +441,21 @@ function waitForServerVideo(videoId, secondsLeft = API_RESPONSE_SEC) {
       clearTimeout(totalTimeout);
       abort.controllers.forEach((c) => c.abort());
       videoPollAbort = null;
+      if (jobId) {
+        const entry = jobTimings.get(jobId);
+        logJobTiming(jobId, value ? "video_poll_ready" : "video_poll_timeout", {
+          polls: entry?.pollCount ?? 0,
+          pollDurationSec: ((performance.now() - pollStarted) / 1000).toFixed(2),
+        });
+      }
       resolve(value);
     };
 
     const callVideoApi = () => {
       if (abort.aborted || resolved) return;
+
+      const entry = jobId ? jobTimings.get(jobId) : null;
+      if (entry) entry.pollCount += 1;
 
       const controller = new AbortController();
       abort.controllers.push(controller);
@@ -425,6 +463,11 @@ function waitForServerVideo(videoId, secondsLeft = API_RESPONSE_SEC) {
       const requestTimeout = setTimeout(() => {
         controller.abort();
       }, 5000);
+
+      const pollNum = entry?.pollCount ?? 0;
+      if (jobId && (pollNum === 1 || pollNum % 5 === 0)) {
+        logJobTiming(jobId, "video_poll_attempt", { attempt: pollNum });
+      }
 
       fetch(path, {
         method: "GET",
@@ -443,11 +486,12 @@ function waitForServerVideo(videoId, secondsLeft = API_RESPONSE_SEC) {
         });
     };
 
-    const interval = setInterval(callVideoApi, 1000);
+    callVideoApi();
+    const interval = setInterval(callVideoApi, 2000);
 
     const totalTimeout = setTimeout(() => {
       stop(null);
-    }, secondsLeft * 500);
+    }, secondsLeft * 1000);
   });
 }
 
@@ -844,12 +888,14 @@ async function startAnnotatorJob(data) {
 
   showVideoReady();
   video.pause();
-  const url = await waitForServerVideo(videoId, secondsLeft);
+  logJobTiming(currentJobId, "video_load_start");
+  const url = await waitForServerVideo(videoId, secondsLeft, currentJobId);
   if (!url) {
     if (jobInfo) {
       jobInfo.textContent = `Video not ready before API deadline (${videoId})`;
     }
     hideVideoReady();
+    clearJobTiming(currentJobId);
     return;
   }
 
@@ -858,7 +904,14 @@ async function startAnnotatorJob(data) {
   }
 
   try {
+    const metaStarted = performance.now();
     await waitForVideoMetadata(url);
+    logJobTiming(currentJobId, "video_metadata_loaded", {
+      durationSec: video.duration,
+      width: video.videoWidth,
+      height: video.videoHeight,
+      loadSec: ((performance.now() - metaStarted) / 1000).toFixed(2),
+    });
     const offset = 0;
     await waitForVideoAtOffset(offset);
     updateTimelineSeekRange();
@@ -872,11 +925,13 @@ async function startAnnotatorJob(data) {
       video.currentTime = offset;
       await video.play();
     }
+    logJobTiming(currentJobId, "video_playing");
     startVideoHudLoop();
     updateVideoHud();
     renderTimelineMarkers();
   } catch (err) {
     console.error("Failed to load job video", err);
+    logJobTiming(currentJobId, "video_load_failed", { error: String(err) });
     if (jobInfo) {
       jobInfo.textContent = `Video failed to load (${url})`;
     }
@@ -895,6 +950,8 @@ function handleTestStart(data) {
 }
 
 function goToTestJob(data) {
+  startJobTiming(data.job_id, jobVideoId(data));
+  logJobTiming(data.job_id, "ui_prepare_test");
   buildLabelButtons();
   showScreen(annotatorScreen);
   showVideoReady();
