@@ -385,36 +385,30 @@ function stopVideoPoll() {
   }
 }
 
-async function waitForServerVideo(videoId, deadlineAtSec) {
+function waitForServerVideo(videoId) {
   stopVideoPoll();
-
-  const abort = { aborted: false };
-  videoPollAbort = abort;
 
   const path = serverVideoApiPath(videoId);
 
-  while (!abort.aborted) {
-    try {
-      const resp = await fetch(path, {
-        method: "GET", // or HEAD if your server supports HEAD
-        cache: "no-store",
-      });
+  return new Promise((resolve) => {
+    const interval = setInterval(async () => {
+      try {
+        console.log("calling api...");
 
-      if (resp.ok) {
-        videoPollAbort = null;
-        return new URL(path, location.origin).href;
+        const resp = await fetch(path, {
+          method: "GET",
+          cache: "no-store",
+        });
+
+        if (resp.ok) {
+          clearInterval(interval);
+          resolve(new URL(path, location.origin).href);
+        }
+      } catch (err) {
+        console.log("api failed");
       }
-    } catch (err) {
-      console.debug("video poll", videoId, err);
-    }
-
-    await new Promise((resolve) =>
-      setTimeout(resolve, VIDEO_POLL_INTERVAL_MS)
-    );
-  }
-
-  videoPollAbort = null;
-  return null;
+    }, 2000);
+  });
 }
 
 function connectWebSocket() {
