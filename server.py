@@ -71,7 +71,6 @@ CACHE_DELAY_MIN_SEC = 10
 CACHE_DELAY_MAX_SEC = 15
 SEGMENT_WINDOW_SEC = 30
 TEST_INTERVAL_SEC = 30
-VIDEO_WS_CHUNK_SIZE = 256 * 1024
 
 
 def segment_start_sec(rank: int, total: int) -> float:
@@ -115,6 +114,7 @@ class ActiveJob:
     video_url: str
     video_key: str
     started_at: float
+    deadline_at: float
     segment_total: int = 1
     rank_by_participant_id: dict[int, int] = field(default_factory=dict)
 
@@ -316,9 +316,10 @@ class ConnectionManager:
             "clip_duration_sec": segment_duration_sec(rank, x),
             "segment_window_sec": SEGMENT_WINDOW_SEC,
             "duration_sec": ANNOTATE_DURATION_SEC,
+            "deadline_at": job.deadline_at,
         }
 
-    async def broadcast_annotate_job(self, job: ActiveJob, video_path: Path) -> None:
+    async def broadcast_annotate_job(self, job: ActiveJob) -> None:
         dead: list[int] = []
         for aid in sorted(job.rank_by_participant_id, key=job.rank_by_participant_id.get):
             rank = job.rank_by_participant_id[aid]
@@ -326,9 +327,6 @@ class ConnectionManager:
             if not session:
                 continue
             try:
-                await send_video_over_websocket(
-                    session.websocket, job.job_id, job.video_key, video_path
-                )
                 await session.websocket.send_text(
                     json.dumps(self._annotate_start_payload(job, rank, session))
                 )
@@ -337,18 +335,13 @@ class ConnectionManager:
         for aid in dead:
             await self._drop_participant(aid)
 
-    async def send_active_annotate_job(
-        self, session: AnnotatorSession, video_path: Path
-    ) -> None:
+    async def send_active_annotate_job(self, session: AnnotatorSession) -> None:
         if not active_jobs:
             return
         job_id, job = max(active_jobs.items(), key=lambda item: item[1].started_at)
         rank = job.rank_by_participant_id.get(session.annotator_id)
         if rank is None:
             return
-        await send_video_over_websocket(
-            session.websocket, job_id, job.video_key, video_path
-        )
         await session.websocket.send_text(
             json.dumps(self._annotate_start_payload(job, rank, session))
         )
@@ -386,7 +379,7 @@ class ConnectionManager:
             "segment_window_sec": SEGMENT_WINDOW_SEC,
         }
 
-    async def broadcast_test_job(self, state: TestJobState, video_path: Path) -> None:
+    async def broadcast_test_job(self, state: TestJobState) -> None:
         dead: list[int] = []
         for aid in sorted(
             state.rank_by_participant_id, key=state.rank_by_participant_id.get
@@ -396,9 +389,6 @@ class ConnectionManager:
             if not session:
                 continue
             try:
-                await send_video_over_websocket(
-                    session.websocket, state.job_id, state.video_key, video_path
-                )
                 await session.websocket.send_text(
                     json.dumps(self._test_start_payload(state, rank, session))
                 )
@@ -496,50 +486,9 @@ def video_file_path(video_key: str) -> str:
     return f"/api/videos/{video_key}/file"
 
 
-def active_job_video_path() -> Path | None:
-    if not active_jobs:
-        return None
-    job = max(active_jobs.values(), key=lambda j: j.started_at)
-    path = VIDEOS_DIR / f"{job.video_key}.mp4"
-    return path if path.is_file() else None
-
-
-async def send_video_over_websocket(
-    ws: WebSocket, job_id: str, video_key: str, video_path: Path
-) -> None:
-    size = video_path.stat().st_size
-    await ws.send_text(
-        json.dumps(
-            {
-                "type": "video_transfer_start",
-                "job_id": job_id,
-                "video_key": video_key,
-                "size": size,
-                "mime": "video/mp4",
-            }
-        )
-    )
-
-    def iter_chunks() -> Any:
-        with video_path.open("rb") as f:
-            while chunk := f.read(VIDEO_WS_CHUNK_SIZE):
-                yield chunk
-
-    for chunk in iter_chunks():
-        await ws.send_bytes(chunk)
-
-    await ws.send_text(
-        json.dumps(
-            {
-                "type": "video_transfer_end",
-                "job_id": job_id,
-                "video_key": video_key,
-            }
-        )
-    )
-
-
 async def run_annotate_job(video_url: str) -> dict[str, Any]:
+    started_at = time.time()
+    deadline_at = started_at + ANNOTATE_DURATION_SEC
     key = url_key(video_url)
     job_id = f"{key}-{int(time.time() * 1000)}"
     _, _, video_path = cache_paths(key)
@@ -552,18 +501,38 @@ async def run_annotate_job(video_url: str) -> dict[str, Any]:
         job_id=job_id,
         video_url=video_url,
         video_key=key,
-        started_at=time.time(),
+        started_at=started_at,
+        deadline_at=deadline_at,
         segment_total=x,
         rank_by_participant_id=rank_by_id,
     )
     active_jobs[job_id] = job
     job_events[job_id] = []
 
-    await ensure_video_downloaded(video_url, video_path)
+    download_timeout = max(0.001, deadline_at - time.time())
+    try:
+        await asyncio.wait_for(
+            ensure_video_downloaded(video_url, video_path),
+            timeout=download_timeout,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Job %s: video download did not finish within %.1fs",
+            job_id,
+            download_timeout,
+        )
+    except httpx.HTTPError:
+        logger.exception("Video download failed for job %s", job_id)
 
-    logger.info("Annotate job %s: %d users %s", job_id, x, rank_by_id)
-    await manager.broadcast_annotate_job(job, video_path)
-    await asyncio.sleep(ANNOTATE_DURATION_SEC)
+    if video_path.is_file():
+        logger.info("Annotate job %s: %d users %s", job_id, x, rank_by_id)
+        await manager.broadcast_annotate_job(job)
+    else:
+        logger.warning("Job %s: no local video to broadcast", job_id)
+
+    remaining = deadline_at - time.time()
+    if remaining > 0:
+        await asyncio.sleep(remaining)
 
     events = sorted(job_events.pop(job_id, []), key=lambda e: e["time_sec"])
     active_jobs.pop(job_id, None)
@@ -650,7 +619,7 @@ async def run_test_round() -> None:
 
     try:
         logger.info("Test job %s: %d users", job_id, state.segment_total)
-        await manager.broadcast_test_job(state, video_path)
+        await manager.broadcast_test_job(state)
         await asyncio.sleep(ANNOTATE_DURATION_SEC)
     finally:
         active_test_jobs.discard(job_id)
@@ -855,11 +824,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             }
                         )
                     )
-                    active_video_path = active_job_video_path()
-                    if active_video_path:
-                        await manager.send_active_annotate_job(
-                            annotator_session, active_video_path
-                        )
+                    if active_jobs:
+                        await manager.send_active_annotate_job(annotator_session)
                 elif role == "reviewer":
                     reviewer_session = await manager.register_reviewer(websocket)
                     rank = manager.rank_of_participant(reviewer_session.annotator_id)

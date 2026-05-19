@@ -95,9 +95,6 @@ let testNextDeadline = null;
 let pendingTestJob = null;
 let nextTestRoundAtSec = null;
 let loadedVideoJobId = null;
-const videoBlobUrls = new Map();
-let pendingVideoTransfer = null;
-const videoTransferWaiters = new Map();
 
 function wsUrl() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -228,16 +225,16 @@ function startTestNextCountdown(nextRoundAtSec) {
   testNextRafId = requestAnimationFrame(tick);
 }
 
-function startApiCountdown(durationSec = API_RESPONSE_SEC) {
+function startApiCountdownFromDeadline(deadlineAtSec) {
   if (!apiCountdown || !countdownValue) return;
   stopApiCountdown();
   if (IS_TEST_PAGE) stopTestNextCountdown(true);
   apiCountdown.classList.remove("hidden", "done");
   apiCountdown.classList.add("active");
-  countdownDeadline = performance.now() + durationSec * 1000;
+  countdownDeadline = null;
 
   const tick = () => {
-    const leftMs = countdownDeadline - performance.now();
+    const leftMs = deadlineAtSec * 1000 - Date.now();
     const leftSec = Math.max(0, leftMs / 1000);
     const display = Math.ceil(leftSec);
     countdownValue.textContent = String(display);
@@ -259,6 +256,10 @@ function startApiCountdown(durationSec = API_RESPONSE_SEC) {
     countdownRafId = requestAnimationFrame(tick);
   };
   countdownRafId = requestAnimationFrame(tick);
+}
+
+function startApiCountdown(durationSec = API_RESPONSE_SEC) {
+  startApiCountdownFromDeadline(Date.now() / 1000 + durationSec);
 }
 
 function showRoleModal() {
@@ -306,6 +307,14 @@ function redirectToAnnotatorForApiJob(data) {
   window.location.href = "/app";
 }
 
+function beginJobCountdown(data) {
+  if (data.deadline_at) {
+    startApiCountdownFromDeadline(data.deadline_at);
+  } else if (data.duration_sec) {
+    startApiCountdown(data.duration_sec);
+  }
+}
+
 function goToAnnotatorForJob(data) {
   if (IS_TEST_PAGE) {
     redirectToAnnotatorForApiJob(data);
@@ -315,6 +324,7 @@ function goToAnnotatorForJob(data) {
   buildLabelButtons();
   showScreen(annotatorScreen);
   showVideoReady();
+  beginJobCountdown(data);
 
   if (data.annotator_index != null) {
     startAnnotatorJob(data);
@@ -358,19 +368,7 @@ function stripVideoUrlHash(url) {
   return i >= 0 ? url.slice(0, i) : url;
 }
 
-function revokeJobVideoUrl(jobId) {
-  const old = videoBlobUrls.get(jobId);
-  if (old) {
-    URL.revokeObjectURL(old);
-    videoBlobUrls.delete(jobId);
-  }
-}
-
 function resolvePlaybackUrl(data) {
-  const jobId = data.job_id;
-  if (jobId && videoBlobUrls.has(jobId)) {
-    return videoBlobUrls.get(jobId);
-  }
   if (data.video_file) {
     return new URL(data.video_file, location.origin).href;
   }
@@ -378,69 +376,6 @@ function resolvePlaybackUrl(data) {
     return data.video_url;
   }
   return null;
-}
-
-function waitForVideoTransfer(jobId, timeoutMs = 120_000) {
-  if (videoBlobUrls.has(jobId)) {
-    return Promise.resolve(videoBlobUrls.get(jobId));
-  }
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      const waiters = videoTransferWaiters.get(jobId) || [];
-      videoTransferWaiters.set(
-        jobId,
-        waiters.filter((w) => w.resolve !== resolve)
-      );
-      reject(new Error("Video transfer timed out"));
-    }, timeoutMs);
-    const finish = (url) => {
-      clearTimeout(timer);
-      resolve(url);
-    };
-    const fail = (err) => {
-      clearTimeout(timer);
-      reject(err);
-    };
-    const waiters = videoTransferWaiters.get(jobId) || [];
-    waiters.push({ resolve: finish, reject: fail });
-    videoTransferWaiters.set(jobId, waiters);
-  });
-}
-
-function handleVideoTransferStart(data) {
-  pendingVideoTransfer = {
-    job_id: data.job_id,
-    video_key: data.video_key,
-    size: data.size || 0,
-    mime: data.mime || "video/mp4",
-    chunks: [],
-    received: 0,
-  };
-}
-
-function handleVideoTransferEnd(data) {
-  const transfer = pendingVideoTransfer;
-  if (!transfer || transfer.job_id !== data.job_id) return;
-
-  const blob = new Blob(transfer.chunks, { type: transfer.mime });
-  revokeJobVideoUrl(data.job_id);
-  const url = URL.createObjectURL(blob);
-  videoBlobUrls.set(data.job_id, url);
-  pendingVideoTransfer = null;
-
-  const waiters = videoTransferWaiters.get(data.job_id) || [];
-  videoTransferWaiters.delete(data.job_id);
-  for (const w of waiters) {
-    w.resolve(url);
-  }
-}
-
-function handleWsBinary(data) {
-  const transfer = pendingVideoTransfer;
-  if (!transfer) return;
-  const chunk = new Uint8Array(data);
-  transfer.chunks.push(chunk);
-  transfer.received += chunk.byteLength;
 }
 
 function connectWebSocket() {
@@ -452,7 +387,6 @@ function connectWebSocket() {
     wsAuthed = false;
     wsConnectResolve = resolve;
     ws = new WebSocket(wsUrl());
-    ws.binaryType = "arraybuffer";
     ws.onopen = () => {
       wsAuthed = true;
       if (wsConnectResolve) {
@@ -464,19 +398,7 @@ function connectWebSocket() {
       wsConnectResolve = null;
       reject(new Error("WebSocket connection failed"));
     };
-    ws.onmessage = (ev) => {
-      if (typeof ev.data === "string") {
-        handleMessage(JSON.parse(ev.data));
-        return;
-      }
-      if (ev.data instanceof ArrayBuffer) {
-        handleWsBinary(ev.data);
-      } else if (ev.data instanceof Blob) {
-        ev.data.arrayBuffer().then(handleWsBinary).catch((err) => {
-          console.error("Video chunk error", err);
-        });
-      }
-    };
+    ws.onmessage = (ev) => handleMessage(JSON.parse(ev.data));
     ws.onclose = () => {
       wsAuthed = false;
       if (roleStatus) roleStatus.textContent = "Disconnected. Refresh the page.";
@@ -807,14 +729,7 @@ function waitForVideoAtOffset(offset) {
 }
 
 async function startAnnotatorJob(data) {
-  let url = resolvePlaybackUrl(data);
-  if (!url && data.job_id) {
-    try {
-      url = await waitForVideoTransfer(data.job_id);
-    } catch (err) {
-      console.error(err);
-    }
-  }
+  const url = resolvePlaybackUrl(data);
   if (!url) return;
 
   if (data.job_id === loadedVideoJobId && sameVideoUrl(video.src, url)) {
@@ -832,7 +747,6 @@ async function startAnnotatorJob(data) {
   if (data.annotator_id != null) myParticipantId = data.annotator_id;
   renderSessionEvents();
   renderTimelineMarkers();
-  startApiCountdown(data.duration_sec ?? API_RESPONSE_SEC);
 
   const index = data.annotator_index ?? 1;
   const total = data.annotator_total ?? 1;
@@ -884,6 +798,7 @@ function goToTestJob(data) {
   buildLabelButtons();
   showScreen(annotatorScreen);
   showVideoReady();
+  beginJobCountdown(data);
 
   if (role !== "test") {
     pendingTestJob = data;
@@ -934,6 +849,7 @@ function handleMessage(data) {
         if (pendingAnnotateJob) {
           const job = applyRoleAckToJob(pendingAnnotateJob, data);
           pendingAnnotateJob = null;
+          beginJobCountdown(job);
           startAnnotatorJob(job);
         }
       }
@@ -971,12 +887,6 @@ function handleMessage(data) {
       if (role === "reviewer") {
         send({ type: "list_videos" });
       }
-      break;
-    case "video_transfer_start":
-      handleVideoTransferStart(data);
-      break;
-    case "video_transfer_end":
-      handleVideoTransferEnd(data);
       break;
     default:
       break;
