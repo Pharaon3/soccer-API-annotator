@@ -6,6 +6,7 @@ const PENDING_ANNOTATE_KEY = "pendingAnnotateJob";
 
 let wsAuthed = false;
 let wsConnectResolve = null;
+let wsConnectingPromise = null;
 
 const LABELS = [
   { id: "pass", key: "p", display: "Pass" },
@@ -395,23 +396,35 @@ function stopVideoPoll() {
   }
 }
 
-function waitForServerVideo(videoId) {
+function waitForServerVideo(videoId, secondsLeft = API_RESPONSE_SEC) {
   stopVideoPoll();
 
   const path = serverVideoApiPath(videoId);
+  const abort = { aborted: false, controllers: [] };
+  videoPollAbort = abort;
 
   return new Promise((resolve) => {
     let resolved = false;
 
-    const totalTimeout = setTimeout(() => {
-      if (!resolved) {
-        clearInterval(interval);
-        resolve(null);
-      }
-    }, 2000);
+    const stop = (value) => {
+      if (resolved) return;
+      resolved = true;
+      clearInterval(interval);
+      clearTimeout(totalTimeout);
+      abort.controllers.forEach((c) => c.abort());
+      videoPollAbort = null;
+      resolve(value);
+    };
 
-    const interval = setInterval(() => {
+    const callVideoApi = () => {
+      if (abort.aborted || resolved) return;
+
       const controller = new AbortController();
+      abort.controllers.push(controller);
+
+      const requestTimeout = setTimeout(() => {
+        controller.abort();
+      }, 5000);
 
       fetch(path, {
         method: "GET",
@@ -419,44 +432,59 @@ function waitForServerVideo(videoId) {
         signal: controller.signal,
       })
         .then((resp) => {
-          if (resp.ok && !resolved) {
-            resolved = true;
-            clearTimeout(totalTimeout);
-            clearInterval(interval);
-            resolve(new URL(path, location.origin).href);
+          clearTimeout(requestTimeout);
+
+          if (resp.ok) {
+            stop(new URL(path, location.origin).href);
           }
         })
-        .catch(() => {});
-    }, 2000);
+        .catch(() => {
+          clearTimeout(requestTimeout);
+        });
+    };
+
+    const interval = setInterval(callVideoApi, 2000);
+
+    const totalTimeout = setTimeout(() => {
+      stop(null);
+    }, secondsLeft * 1000);
   });
 }
 
 function connectWebSocket() {
-  return new Promise((resolve, reject) => {
-    if (ws && ws.readyState === WebSocket.OPEN && wsAuthed) {
-      resolve();
-      return;
-    }
+  if (ws && ws.readyState === WebSocket.OPEN && wsAuthed) {
+    return Promise.resolve();
+  }
+
+  if (wsConnectingPromise) {
+    return wsConnectingPromise;
+  }
+
+  wsConnectingPromise = new Promise((resolve, reject) => {
     wsAuthed = false;
-    wsConnectResolve = resolve;
     ws = new WebSocket(wsUrl());
+
     ws.onopen = () => {
       wsAuthed = true;
-      if (wsConnectResolve) {
-        wsConnectResolve();
-        wsConnectResolve = null;
-      }
+      wsConnectingPromise = null;
+      resolve();
     };
+
     ws.onerror = () => {
-      wsConnectResolve = null;
+      wsConnectingPromise = null;
       reject(new Error("WebSocket connection failed"));
     };
+
     ws.onmessage = (ev) => handleMessage(JSON.parse(ev.data));
+
     ws.onclose = () => {
       wsAuthed = false;
+      wsConnectingPromise = null;
       if (roleStatus) roleStatus.textContent = "Disconnected. Refresh the page.";
     };
   });
+
+  return wsConnectingPromise;
 }
 
 function send(msg) {

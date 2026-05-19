@@ -94,7 +94,7 @@ document.getElementById("login-form")?.addEventListener("submit", async (e) => {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "same-origin",
-      body: JSON.stringify({ password_hash: await hashPassword(password) }),
+      body: JSON.stringify({ password }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
