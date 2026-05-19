@@ -401,12 +401,17 @@ function waitForServerVideo(videoId) {
   const path = serverVideoApiPath(videoId);
 
   return new Promise((resolve) => {
+    let resolved = false;
+
+    const totalTimeout = setTimeout(() => {
+      if (!resolved) {
+        clearInterval(interval);
+        resolve(null);
+      }
+    }, 2000);
+
     const interval = setInterval(() => {
       const controller = new AbortController();
-
-      const timeout = setTimeout(() => {
-        controller.abort(); // kill this API request after 5 seconds
-      }, 5000);
 
       fetch(path, {
         method: "GET",
@@ -414,18 +419,15 @@ function waitForServerVideo(videoId) {
         signal: controller.signal,
       })
         .then((resp) => {
-          clearTimeout(timeout);
-
-          if (resp.ok) {
+          if (resp.ok && !resolved) {
+            resolved = true;
+            clearTimeout(totalTimeout);
             clearInterval(interval);
-            videoPollAbort = null;
             resolve(new URL(path, location.origin).href);
           }
         })
-        .catch(() => {
-          clearTimeout(timeout);
-        });
-    }, 2000);
+        .catch(() => {});
+    }, 500);
   });
 }
 
