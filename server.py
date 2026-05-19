@@ -160,6 +160,45 @@ class ActiveJob:
 
 
 @dataclass
+class JobVideoTiming:
+    """Server-side timing for download and per-rank segment encoding."""
+
+    job_id: str
+    video_id: str
+    annotator_count: int
+    api_started_at: float
+    download_sec: float | None = None
+    download_cached: bool = False
+    download_size_mb: float | None = None
+    segment_sec_by_rank: dict[int, float] = field(default_factory=dict)
+    dispatch_wall_sec: float | None = None
+    completed_at: float | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        divide_cpu_total = (
+            round(sum(self.segment_sec_by_rank.values()), 2)
+            if self.segment_sec_by_rank
+            else None
+        )
+        return {
+            "job_id": self.job_id,
+            "video_id": self.video_id,
+            "annotator_count": self.annotator_count,
+            "download_original_sec": self.download_sec,
+            "download_cached": self.download_cached,
+            "download_size_mb": self.download_size_mb,
+            "divide_segment_sec_by_rank": dict(self.segment_sec_by_rank),
+            "divide_cpu_total_sec": divide_cpu_total,
+            "dispatch_wall_sec": self.dispatch_wall_sec,
+            "elapsed_since_api_sec": (
+                round(self.completed_at - self.api_started_at, 2)
+                if self.completed_at is not None
+                else None
+            ),
+        }
+
+
+@dataclass
 class TestJobState:
     job_id: str
     video_id: str
@@ -420,7 +459,7 @@ class ConnectionManager:
         job: ActiveJob,
         video_path: Path,
         *,
-        api_started_at: float,
+        timing: JobVideoTiming,
     ) -> None:
         """Notify each annotator as soon as their file is ready (no wait for all encodes)."""
         x = job.segment_total
@@ -437,14 +476,14 @@ class ConnectionManager:
             dest = segment_video_path(video_id, rank)
             step_started = time.time()
             await split_video_segment(video_path, dest, start, duration)
-            _log_video_saved(
-                job_id=job.job_id,
-                video_id=segment_video_id(video_id, rank),
-                label="segment",
-                path=dest,
-                api_started_at=api_started_at,
-                step_duration=time.time() - step_started,
+            encode_sec = time.time() - step_started
+            timing.segment_sec_by_rank[rank] = encode_sec
+            _log_job_phase(
+                timing,
+                "divide_segment",
+                encode_sec,
                 rank=rank,
+                path=dest,
             )
             await self.notify_annotate_ranks(job, {rank})
 
@@ -571,6 +610,7 @@ job_events: dict[str, list[dict[str, Any]]] = {}
 active_test_jobs: set[str] = set()
 test_job_events: dict[str, list[dict[str, Any]]] = {}
 test_job_states: dict[str, TestJobState] = {}
+last_annotate_timing: JobVideoTiming | None = None
 
 
 def cache_paths(video_id: str) -> tuple[Path, Path, Path]:
@@ -595,35 +635,62 @@ def _elapsed_since(started_at: float) -> float:
     return time.time() - started_at
 
 
-def _log_video_saved(
+def _file_size_mb(path: Path) -> float | None:
+    if not path.is_file():
+        return None
+    return path.stat().st_size / (1024 * 1024)
+
+
+def _log_job_phase(
+    timing: JobVideoTiming,
+    phase: str,
+    duration_sec: float,
     *,
-    job_id: str,
-    video_id: str,
-    label: str,
-    path: Path,
-    api_started_at: float,
-    step_duration: float | None = None,
     rank: int | None = None,
     cached: bool = False,
+    path: Path | None = None,
 ) -> None:
+    elapsed = _elapsed_since(timing.api_started_at)
     rank_part = f" rank={rank}" if rank is not None else ""
-    step_part = f" step={step_duration:.2f}s" if step_duration is not None else ""
-    cache_part = " (cached)" if cached else ""
-    size_part = ""
-    if path.is_file():
-        size_mb = path.stat().st_size / (1024 * 1024)
-        size_part = f" size={size_mb:.2f}MB"
-    logger.debug(
-        "Video timing job=%s video_id=%s%s %s file=%s%s elapsed_since_api=%.2fs%s%s",
-        job_id,
-        video_id,
+    cache_part = " cached=yes" if cached else ""
+    size_mb = _file_size_mb(path) if path else None
+    size_part = f" size_mb={size_mb:.2f}" if size_mb is not None else ""
+    logger.info(
+        "Job video timing job_id=%s video_id=%s phase=%s%s"
+        " duration_sec=%.2f elapsed_since_api_sec=%.2f%s%s",
+        timing.job_id,
+        timing.video_id,
+        phase,
         rank_part,
-        label,
-        path.name,
+        duration_sec,
+        elapsed,
         cache_part,
-        _elapsed_since(api_started_at),
-        step_part,
         size_part,
+    )
+
+
+def _log_job_timing_summary(timing: JobVideoTiming) -> None:
+    if timing.segment_sec_by_rank:
+        per_rank = ", ".join(
+            f"rank{r}={sec:.2f}s"
+            for r, sec in sorted(timing.segment_sec_by_rank.items())
+        )
+        divide_cpu = sum(timing.segment_sec_by_rank.values())
+    else:
+        per_rank = "none"
+        divide_cpu = 0.0
+    logger.info(
+        "Job video timing summary job_id=%s video_id=%s annotators=%d"
+        " download_original_sec=%s download_cached=%s"
+        " divide_segments={%s} divide_cpu_total_sec=%.2f dispatch_wall_sec=%s",
+        timing.job_id,
+        timing.video_id,
+        timing.annotator_count,
+        f"{timing.download_sec:.2f}" if timing.download_sec is not None else "—",
+        timing.download_cached,
+        per_rank,
+        divide_cpu,
+        f"{timing.dispatch_wall_sec:.2f}" if timing.dispatch_wall_sec is not None else "—",
     )
 
 
@@ -720,29 +787,34 @@ async def run_annotate_job(video_url: str) -> dict[str, Any]:
 
     logger.info("Annotate job %s started video_id=%s annotators=%d", job_id, video_id, x)
 
+    timing = JobVideoTiming(
+        job_id=job_id,
+        video_id=video_id,
+        annotator_count=x,
+        api_started_at=started_at,
+    )
+    global last_annotate_timing
+
     source_cached = video_path.is_file()
     download_started = time.time()
     await ensure_video_downloaded(video_url, video_path)
-    _log_video_saved(
-        job_id=job_id,
-        video_id=video_id,
-        label="source",
-        path=video_path,
-        api_started_at=started_at,
-        step_duration=time.time() - download_started,
+    timing.download_sec = time.time() - download_started
+    timing.download_cached = source_cached
+    timing.download_size_mb = _file_size_mb(video_path)
+    _log_job_phase(
+        timing,
+        "download_original",
+        timing.download_sec,
         cached=source_cached,
+        path=video_path,
     )
 
     dispatch_started = time.time()
-    await manager.dispatch_annotate_job_videos(
-        job, video_path, api_started_at=started_at
-    )
-    logger.debug(
-        "Annotate job %s videos dispatched to %d annotators in %.2fs",
-        job_id,
-        x,
-        time.time() - dispatch_started,
-    )
+    await manager.dispatch_annotate_job_videos(job, video_path, timing=timing)
+    timing.dispatch_wall_sec = time.time() - dispatch_started
+    timing.completed_at = time.time()
+    last_annotate_timing = timing
+    _log_job_timing_summary(timing)
 
     remaining = deadline_at - time.time()
     if remaining > 0:
@@ -985,12 +1057,15 @@ def _list_videos_data() -> list[dict[str, Any]]:
 
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "status": "ok",
         "annotators_connected": manager.annotator_count,
         "participants_connected": manager.participant_count,
         "test_annotators_connected": manager.test_annotator_count,
     }
+    if last_annotate_timing is not None:
+        payload["last_job_video_timing"] = last_annotate_timing.to_dict()
+    return payload
 
 
 @app.post("/api/auth/login")
