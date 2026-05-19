@@ -1571,20 +1571,31 @@ async function loadReviewerVideo(item, btn) {
   try {
     const res = await apiFetch(item.annotations_file);
     const data = await res.json();
-    const events = data.events || [];
-    reviewerEvents.innerHTML = events
+    const rows = (data.predictions || data.events || []).map((item) => {
+      if (item.action != null) {
+        const frame = item.frame ?? 0;
+        return {
+          frame,
+          label: item.action,
+          time_sec: frame / videoFps,
+          participant_id: item.participant_id,
+        };
+      }
+      return {
+        frame: item.frame ?? timeToFrame(item.time_sec),
+        label: item.label,
+        time_sec: item.time_sec,
+        participant_id: item.participant_id,
+      };
+    });
+    reviewerEvents.innerHTML = rows
       .slice()
       .sort((a, b) => a.time_sec - b.time_sec)
       .map((e) => {
-        const frame =
-          e.frame !== undefined
-            ? e.frame
-            : timeToFrame(e.time_sec);
         const pid = e.participant_id ?? 1;
         const color = participantColor(pid);
-        const who =
-          pid === myParticipantId ? "you" : `#${pid}`;
-        return `<li style="border-left: 4px solid ${color}"><button type="button" data-time="${e.time_sec}">frame ${frame} · ${e.time_sec.toFixed(2)}s — ${labelDisplayName(e.label)} (${who})</button></li>`;
+        const who = pid === myParticipantId ? "you" : `#${pid}`;
+        return `<li style="border-left: 4px solid ${color}"><button type="button" data-time="${e.time_sec}">frame ${e.frame} · ${e.time_sec.toFixed(2)}s — ${labelDisplayName(e.label)} (${who})</button></li>`;
       })
       .join("");
     reviewerEvents.querySelectorAll("button").forEach((b) => {

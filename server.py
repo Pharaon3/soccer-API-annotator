@@ -160,6 +160,24 @@ def api_seconds_left(deadline_at: float) -> int:
     return max(0, min(ANNOTATE_DURATION_SEC, int(math.ceil(remaining))))
 
 
+def events_to_predictions(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert internal job events to API predictions format."""
+    predictions: list[dict[str, Any]] = []
+    for e in sorted(events, key=lambda x: float(x.get("time_sec", 0))):
+        frame = e.get("frame")
+        if frame is None:
+            frame = int(round(float(e["time_sec"]) * SEGMENT_FPS))
+        predictions.append({"frame": int(frame), "action": e["label"]})
+    return predictions
+
+
+def annotations_api_payload(data: dict[str, Any]) -> dict[str, Any]:
+    """Normalize stored JSON (legacy events or predictions) for API consumers."""
+    if "predictions" in data:
+        return {"predictions": data["predictions"]}
+    return {"predictions": events_to_predictions(data.get("events", []))}
+
+
 def _remove_annotation_event(
     events: list[dict[str, Any]], time_sec: float, label: str
 ) -> bool:
@@ -757,7 +775,9 @@ def load_cached(video_url: str) -> dict[str, Any] | None:
         return None
     _, events_file, _ = cache_paths(vid)
     if events_file.is_file():
-        return json.loads(events_file.read_text(encoding="utf-8"))
+        return annotations_api_payload(
+            json.loads(events_file.read_text(encoding="utf-8"))
+        )
     return None
 
 
@@ -844,11 +864,10 @@ async def run_annotate_job(video_url: str) -> dict[str, Any]:
     events = sorted(job_events.pop(job_id, []), key=lambda e: e["time_sec"])
     active_jobs.pop(job_id, None)
 
-    api_events = [{"time_sec": e["time_sec"], "label": e["label"]} for e in events]
+    predictions = events_to_predictions(events)
+    payload = {"predictions": predictions}
     meta, events_file, _ = cache_paths(video_id)
-    events_file.write_text(
-        json.dumps({"events": api_events}, indent=2), encoding="utf-8"
-    )
+    events_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     meta.write_text(
         json.dumps(
             {
@@ -862,7 +881,7 @@ async def run_annotate_job(video_url: str) -> dict[str, Any]:
         encoding="utf-8",
     )
     await manager.notify_reviewers_video_saved(video_id)
-    return {"events": api_events}
+    return payload
 
 
 async def run_test_round() -> None:
@@ -1062,7 +1081,9 @@ def _list_videos_data() -> list[dict[str, Any]]:
         event_count = 0
         if events_file.is_file():
             data = json.loads(events_file.read_text(encoding="utf-8"))
-            event_count = len(data.get("events", []))
+            event_count = len(
+                data.get("predictions", data.get("events", []))
+            )
         items.append(
             {
                 "video_id": vid,
@@ -1149,7 +1170,7 @@ async def get_annotations(video_id: str, request: Request) -> dict[str, Any]:
     path = ANNOTATIONS_DIR / f"{video_id}.json"
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Annotations not found")
-    return json.loads(path.read_text(encoding="utf-8"))
+    return annotations_api_payload(json.loads(path.read_text(encoding="utf-8")))
 
 
 @app.get("/api/labels")

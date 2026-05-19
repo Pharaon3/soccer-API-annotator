@@ -4,7 +4,7 @@ API and web UI for crowd-sourced soccer event annotation on short video clips.
 
 ## Features
 
-- **POST `/api/large_model_processing`** — send a public `video_url`; after 22 seconds returns merged JSON `{ "events": [{ "time_sec", "label" }, ...] }`
+- **POST `/api/large_model_processing`** — send a public `video_url`; after 22 seconds returns merged JSON `{ "predictions": [{ "frame", "action" }, ...] }`
 - **Server-hosted video** — video id is the original file name (e.g. `b56717cd…` from `…/b56717cd….mp4`); files live in `data/videos/{id}.mp4`; public playback at `GET /api/video/{id}` (no auth); clients poll every 2s until the file is ready
 - **Multi-annotator sync** — each user plays their slice of a 30s window from the same cached file
 - **Cached responses** — repeat requests for the same URL wait 10–15s, then return stored JSON
