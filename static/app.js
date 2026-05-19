@@ -443,11 +443,11 @@ function waitForServerVideo(videoId, secondsLeft = API_RESPONSE_SEC) {
         });
     };
 
-    const interval = setInterval(callVideoApi, 2000);
+    const interval = setInterval(callVideoApi, 1000);
 
     const totalTimeout = setTimeout(() => {
       stop(null);
-    }, secondsLeft * 1000);
+    }, secondsLeft * 500);
   });
 }
 
