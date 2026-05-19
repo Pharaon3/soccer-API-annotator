@@ -719,7 +719,7 @@ function removeSessionEvent(eventId) {
 
 function annotate(labelId) {
   if (!currentJobId || !video.src) return;
-  const time_sec = video.currentTime;
+  const time_sec = video.currentTime + (jobStartOffset || 0);
   const frame = timeToFrame(time_sec);
   showOverlay(labelId, frame);
   send({
@@ -859,7 +859,7 @@ async function startAnnotatorJob(data) {
 
   try {
     await waitForVideoMetadata(url);
-    const offset = jobStartOffset;
+    const offset = 0;
     await waitForVideoAtOffset(offset);
     updateTimelineSeekRange();
     estimateFps();

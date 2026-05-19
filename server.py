@@ -10,6 +10,7 @@ import os
 import random
 import re
 import time
+import subprocess
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -332,15 +333,16 @@ class ConnectionManager:
         return {
             "type": "annotate_start",
             "job_id": job.job_id,
-            "video_id": job.video_id,
+            "video_id": segment_video_id(job.video_id, rank),
+            "original_video_id": job.video_id,
             "video_file": public_video_path(job.video_id),
             "source_url": job.video_url,
             "annotator_id": session.annotator_id,
             "annotator_index": rank,
             "annotator_total": x,
-            "start_offset_sec": start_offset,
+            "start_offset_sec": 0,
             "time_origin_sec": start_offset,
-            "segment_end_sec": seg_end,
+            "segment_end_sec": segment_duration_sec(rank, x),
             "clip_duration_sec": segment_duration_sec(rank, x),
             "segment_window_sec": SEGMENT_WINDOW_SEC,
             "duration_sec": ANNOTATE_DURATION_SEC,
@@ -489,6 +491,49 @@ def cache_paths(video_id: str) -> tuple[Path, Path, Path]:
     events_file = ANNOTATIONS_DIR / f"{video_id}.json"
     return meta, events_file, VIDEOS_DIR / f"{video_id}.mp4"
 
+def segment_video_id(video_id: str, rank: int) -> str:
+    return f"{video_id}_part_{rank}"
+
+
+def segment_video_path(video_id: str, rank: int) -> Path:
+    return VIDEOS_DIR / f"{segment_video_id(video_id, rank)}.mp4"
+
+
+async def split_video_segment(src: Path, dest: Path, start: float, duration: float) -> None:
+    if dest.is_file():
+        return
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss", str(start),
+        "-i", str(src),
+        "-t", str(duration),
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-c:a", "aac",
+        str(dest),
+    ]
+
+    await asyncio.to_thread(
+        subprocess.run,
+        cmd,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+async def create_user_segments(video_id: str, video_path: Path, total: int) -> None:
+    tasks = []
+
+    for rank in range(1, total + 1):
+        start = segment_start_sec(rank, total)
+        duration = segment_duration_sec(rank, total)
+        dest = segment_video_path(video_id, rank)
+        tasks.append(split_video_segment(video_path, dest, start, duration))
+
+    await asyncio.gather(*tasks)
 
 def load_cached(video_url: str) -> dict[str, Any] | None:
     try:
@@ -553,7 +598,9 @@ async def run_annotate_job(video_url: str) -> dict[str, Any]:
         except httpx.HTTPError:
             logger.exception("Video download failed for %s", video_id)
 
-    asyncio.create_task(download_task())
+    await ensure_video_downloaded(video_url, video_path)
+    await create_user_segments(video_id, video_path, x)
+
     logger.info("Annotate job %s video_id=%s: %d users %s", job_id, video_id, x, rank_by_id)
     await manager.broadcast_annotate_job(job)
 
