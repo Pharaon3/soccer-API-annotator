@@ -109,8 +109,19 @@ class ActiveJob:
     started_at: float
     job_dir: Path
     segment_paths: dict[int, Path] = field(default_factory=dict)
+    segment_total: int = 1
+    rank_by_participant_id: dict[int, int] = field(default_factory=dict)
     events: list[dict[str, Any]] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+@dataclass
+class TestJobState:
+    job_id: str
+    video_key: str
+    segment_paths: dict[int, Path]
+    segment_total: int
+    rank_by_participant_id: dict[int, int]
 
 
 class AnnotateRequest(BaseModel):
@@ -265,6 +276,16 @@ class ConnectionManager:
         ordered = sorted(self.participants.keys())
         return ordered.index(participant_id) + 1
 
+    def snapshot_participants(self) -> list[AnnotatorSession]:
+        return sorted(self.participants.values(), key=lambda s: s.annotator_id)
+
+    def snapshot_test_annotators(self) -> list[AnnotatorSession]:
+        return sorted(self.test_annotators.values(), key=lambda s: s.annotator_id)
+
+    @staticmethod
+    def ranks_for_sessions(sessions: list[AnnotatorSession]) -> dict[int, int]:
+        return {s.annotator_id: rank for rank, s in enumerate(sessions, start=1)}
+
     def start_offset_for(self, annotator_index: int, total: int | None = None) -> float:
         """annotator_index is 1-based (y)."""
         x = max(total if total is not None else self.annotator_count, 1)
@@ -282,21 +303,28 @@ class ConnectionManager:
         return start, end
 
     async def broadcast_annotate_job(self, job: ActiveJob) -> None:
-        x = max(self.annotator_count, 1)
+        x = job.segment_total
         payload_base = {
             "type": "annotate_start",
             "job_id": job.job_id,
         }
         dead: list[int] = []
-        sorted_sessions = sorted(
-            self.participants.values(), key=lambda s: s.annotator_id
-        )
-        for rank, session in enumerate(sorted_sessions, start=1):
-            time_origin, segment_end = self.segment_bounds(rank, total=x)
-            clip_duration = segment_duration_sec(rank, x)
+        for aid in sorted(job.rank_by_participant_id, key=job.rank_by_participant_id.get):
+            rank = job.rank_by_participant_id[aid]
+            session = self.participants.get(aid)
+            if not session:
+                logger.warning(
+                    "Job %s: participant %s (rank %s) disconnected before broadcast",
+                    job.job_id,
+                    aid,
+                    rank,
+                )
+                continue
             if rank not in job.segment_paths:
                 logger.warning("Missing segment job=%s rank=%s", job.job_id, rank)
                 continue
+            time_origin, segment_end = self.segment_bounds(rank, total=x)
+            clip_duration = segment_duration_sec(rank, x)
             payload = {
                 **payload_base,
                 "video_url": segment_api_url(job.job_id, rank),
@@ -322,8 +350,10 @@ class ConnectionManager:
         if not active_jobs:
             return
         job_id, job = max(active_jobs.items(), key=lambda item: item[1].started_at)
-        x = max(self.annotator_count, 1)
-        rank = self.rank_of_participant(session.annotator_id)
+        rank = job.rank_by_participant_id.get(session.annotator_id)
+        if rank is None:
+            return
+        x = job.segment_total
         time_origin, segment_end = self.segment_bounds(rank, total=x)
         clip_duration = segment_duration_sec(rank, x)
         if rank not in job.segment_paths:
@@ -355,31 +385,36 @@ class ConnectionManager:
                 )
             )
 
-    async def broadcast_test_job(
-        self,
-        job_id: str,
-        video_key: str,
-        segment_paths: dict[int, Path],
-    ) -> None:
-        x = max(self.test_annotator_count, 1)
+    async def broadcast_test_job(self, state: TestJobState) -> None:
+        x = state.segment_total
         payload_base = {
             "type": "test_start",
-            "job_id": job_id,
-            "video_key": video_key,
+            "job_id": state.job_id,
+            "video_key": state.video_key,
             "duration_sec": ANNOTATE_DURATION_SEC,
         }
         dead: list[int] = []
-        sorted_sessions = sorted(
-            self.test_annotators.values(), key=lambda s: s.annotator_id
-        )
-        for rank, session in enumerate(sorted_sessions, start=1):
+        for aid in sorted(
+            state.rank_by_participant_id, key=state.rank_by_participant_id.get
+        ):
+            rank = state.rank_by_participant_id[aid]
+            session = self.test_annotators.get(aid)
+            if not session:
+                logger.warning(
+                    "Test %s: participant %s (rank %s) disconnected before broadcast",
+                    state.job_id,
+                    aid,
+                    rank,
+                )
+                continue
+            if rank not in state.segment_paths:
+                continue
             time_origin, segment_end = self.segment_bounds(rank, total=x)
             clip_duration = segment_duration_sec(rank, x)
-            if rank not in segment_paths:
-                continue
             payload = {
                 **payload_base,
-                "video_url": segment_api_url(job_id, rank),
+                "video_url": segment_api_url(state.job_id, rank),
+                "annotator_id": session.annotator_id,
                 "annotator_index": rank,
                 "annotator_total": x,
                 "start_offset_sec": 0,
@@ -445,7 +480,7 @@ active_jobs: dict[str, ActiveJob] = {}
 job_events: dict[str, list[dict[str, Any]]] = {}
 active_test_jobs: set[str] = set()
 test_job_events: dict[str, list[dict[str, Any]]] = {}
-test_job_segment_paths: dict[str, dict[int, Path]] = {}
+test_job_states: dict[str, TestJobState] = {}
 
 app = FastAPI(title="Soccer Annotator API")
 
@@ -475,7 +510,13 @@ async def run_test_round() -> None:
     active_test_jobs.add(job_id)
     test_job_events[job_id] = []
     job_dir = JOBS_DIR / job_id
-    x = max(manager.test_annotator_count, 1)
+    sessions = manager.snapshot_test_annotators()
+    if not sessions:
+        manager.schedule_next_test_round()
+        await manager.broadcast_test_schedule()
+        return
+    rank_by_id = manager.ranks_for_sessions(sessions)
+    x = len(sessions)
     local_video = VIDEOS_DIR / f"{video_key}.mp4"
 
     try:
@@ -486,13 +527,21 @@ async def run_test_round() -> None:
             download_video,
             local_source=local_video if local_video.is_file() else None,
         )
-        test_job_segment_paths[job_id] = segment_paths
-        await manager.broadcast_test_job(job_id, video_key, segment_paths)
+        state = TestJobState(
+            job_id=job_id,
+            video_key=video_key,
+            segment_paths=segment_paths,
+            segment_total=x,
+            rank_by_participant_id=rank_by_id,
+        )
+        test_job_states[job_id] = state
+        logger.info("Test job %s: %d segments for participants %s", job_id, x, rank_by_id)
+        await manager.broadcast_test_job(state)
         await asyncio.sleep(ANNOTATE_DURATION_SEC)
     finally:
         active_test_jobs.discard(job_id)
         test_job_events.pop(job_id, None)
-        test_job_segment_paths.pop(job_id, None)
+        test_job_states.pop(job_id, None)
         cleanup_job_dir(job_dir)
     manager.schedule_next_test_round()
     await manager.broadcast_test_schedule()
@@ -572,7 +621,9 @@ async def run_annotate_job(video_url: str) -> dict[str, Any]:
     _, _, video_path = cache_paths(key)
     deadline = time.time() + RESPONSE_TIMEOUT_SEC
     job_dir = JOBS_DIR / job_id
-    x = max(manager.annotator_count, 1)
+    sessions = manager.snapshot_participants()
+    rank_by_id = manager.ranks_for_sessions(sessions)
+    x = len(sessions)
 
     segment_paths = await prepare_job_video_segments(
         job_dir, video_url, x, download_video
@@ -586,7 +637,10 @@ async def run_annotate_job(video_url: str) -> dict[str, Any]:
         started_at=time.time(),
         job_dir=job_dir,
         segment_paths=segment_paths,
+        segment_total=x,
+        rank_by_participant_id=rank_by_id,
     )
+    logger.info("Annotate job %s: %d segments for participants %s", job_id, x, rank_by_id)
     active_jobs[job_id] = job
     job_events[job_id] = []
 
@@ -729,8 +783,8 @@ def _resolve_job_segment(job_id: str, rank: int) -> Path | None:
         path = active_jobs[job_id].segment_paths.get(rank)
         if path and path.is_file():
             return path
-    if job_id in test_job_segment_paths:
-        path = test_job_segment_paths[job_id].get(rank)
+    if job_id in test_job_states:
+        path = test_job_states[job_id].segment_paths.get(rank)
         if path and path.is_file():
             return path
     fallback = JOBS_DIR / job_id / f"seg_{rank}.mp4"

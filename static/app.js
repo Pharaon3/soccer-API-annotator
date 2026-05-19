@@ -733,28 +733,35 @@ async function startAnnotatorJob(data) {
   prefetchVideoUrl(url);
   showVideoReady();
   video.pause();
-  if (!sameVideoUrl(video.src, url)) {
-    video.preload = "auto";
-    video.src = url;
-    video.load();
-  }
-  await waitForVideoAtOffset(0);
-  updateTimelineSeekRange();
-
-  hideVideoReady();
-  estimateFps();
   try {
-    video.currentTime = 0;
-    await video.play();
+    if (!sameVideoUrl(video.src, url)) {
+      video.preload = "auto";
+      video.src = url;
+      video.load();
+    }
+    await waitForVideoAtOffset(0);
+    updateTimelineSeekRange();
+    estimateFps();
+    try {
+      video.currentTime = 0;
+      await video.play();
+    } catch (err) {
+      console.warn("Autoplay blocked, retrying muted", err);
+      video.muted = true;
+      video.currentTime = 0;
+      await video.play();
+    }
+    startVideoHudLoop();
+    updateVideoHud();
+    renderTimelineMarkers();
   } catch (err) {
-    console.warn("Autoplay blocked, retrying muted", err);
-    video.muted = true;
-    video.currentTime = 0;
-    await video.play();
+    console.error("Failed to load job video", err);
+    if (jobInfo) {
+      jobInfo.textContent = `Video failed to load (${url})`;
+    }
+  } finally {
+    hideVideoReady();
   }
-  startVideoHudLoop();
-  updateVideoHud();
-  renderTimelineMarkers();
 }
 
 function handleAnnotateStart(data) {
