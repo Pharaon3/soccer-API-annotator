@@ -76,10 +76,11 @@ CACHE_DELAY_MIN_SEC = 10
 CACHE_DELAY_MAX_SEC = 15
 SEGMENT_WINDOW_SEC = 30
 TEST_INTERVAL_SEC = 30
-# Segment outputs: half width/height (~1/4 pixels) plus H.264 compression
-SEGMENT_SCALE_DIVISOR = 2
-SEGMENT_CRF = 30
-SEGMENT_FFMPEG_PRESET = "veryfast"
+# Segment proxy encode: 480p height, 25 fps, H.264 ultrafast
+SEGMENT_SCALE_FILTER = "scale=-2:480"
+SEGMENT_FPS = 25
+SEGMENT_CRF = 28
+SEGMENT_FFMPEG_PRESET = "ultrafast"
 
 
 def segment_start_sec(rank: int, total: int) -> float:
@@ -566,8 +567,6 @@ def _log_video_saved(
 
 
 async def split_video_segment(src: Path, dest: Path, start: float, duration: float) -> None:
-    d = SEGMENT_SCALE_DIVISOR
-    scale = f"scale=trunc(iw/{d})*2:trunc(ih/{d})*2"
     cmd = [
         "ffmpeg",
         "-y",
@@ -578,16 +577,18 @@ async def split_video_segment(src: Path, dest: Path, start: float, duration: flo
         "-t",
         str(duration),
         "-vf",
-        scale,
+        SEGMENT_SCALE_FILTER,
+        "-r",
+        str(SEGMENT_FPS),
         "-c:v",
         "libx264",
-        "-crf",
-        str(SEGMENT_CRF),
         "-preset",
         SEGMENT_FFMPEG_PRESET,
+        "-crf",
+        str(SEGMENT_CRF),
+        "-an",
         "-movflags",
         "+faststart",
-        "-an",
         str(dest),
     ]
 
@@ -724,12 +725,14 @@ async def run_annotate_job(video_url: str) -> dict[str, Any]:
 
     segments_started = time.time()
     logger.info(
-        "Video timing job=%s video_id=%s segment_encode_start count=%d scale=1/%d crf=%d",
+        "Video timing job=%s video_id=%s segment_encode_start count=%d %s fps=%d crf=%d preset=%s",
         job_id,
         video_id,
         x,
-        SEGMENT_SCALE_DIVISOR,
+        SEGMENT_SCALE_FILTER,
+        SEGMENT_FPS,
         SEGMENT_CRF,
+        SEGMENT_FFMPEG_PRESET,
     )
     await create_user_segments(
         video_id, video_path, x, job_id=job_id, api_started_at=started_at
