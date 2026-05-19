@@ -113,6 +113,8 @@ loginForm?.addEventListener("submit", async (e) => {
     loginBtn.textContent = "Signing in…";
   }
 
+  console.log("logging in with password", password);
+
   try {
     const res = await fetch("/api/auth/login", {
       method: "POST",
@@ -120,6 +122,7 @@ loginForm?.addEventListener("submit", async (e) => {
       credentials: "same-origin",
       body: JSON.stringify({ password }),
     });
+    console.log("response", res);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       throw new Error(data.detail || "Login failed");

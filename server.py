@@ -1093,6 +1093,8 @@ async def health() -> dict[str, Any]:
 async def auth_login(body: LoginRequest) -> JSONResponse:
     if not verify_password_plain(body.password):
         raise HTTPException(status_code=401, detail="Invalid password")
+    print("logging in with password", body.password);
+    print("verify_password_plain", verify_password_plain(body.password));
     token = create_session()
     response = JSONResponse(content={"ok": True})
     response.set_cookie(
@@ -1101,6 +1103,7 @@ async def auth_login(body: LoginRequest) -> JSONResponse:
         max_age=SESSION_TTL_SEC,
         **auth_cookie_params(),
     )
+    print("Authentication is OK");
     return response
 
 
