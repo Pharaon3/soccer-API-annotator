@@ -11,6 +11,12 @@ let wsAuthed = false;
 let wsConnectResolve = null;
 let wsConnectingPromise = null;
 
+const DEFAULT_LABEL_KEYBOARD_ROWS = [
+  ["pass", "pass_received", "take_on", "recovery", "tackle"],
+  ["aerial_duel", "save", "shot", "foul", "goal"],
+  ["interception", "substitution", "clearance", "block", "ball_out_of_play"],
+];
+
 let LABELS = [];
 let labelKeyboardRows = DEFAULT_LABEL_KEYBOARD_ROWS;
 let keyToLabel = {};
@@ -46,12 +52,6 @@ const timelineZoneBefore = document.getElementById("timeline-zone-before");
 const timelineZoneActive = document.getElementById("timeline-zone-active");
 const timelineZoneAfter = document.getElementById("timeline-zone-after");
 let timelineTooltip = null;
-
-const DEFAULT_LABEL_KEYBOARD_ROWS = [
-  ["pass", "pass_received", "take_on", "recovery", "tackle"],
-  ["aerial_duel", "save", "shot", "foul", "goal"],
-  ["interception", "substitution", "clearance", "block", "ball_out_of_play"],
-];
 
 const PARTICIPANT_COLORS = [
   "#3d8bfd",
@@ -868,6 +868,7 @@ function buildLabelButtons() {
 }
 
 function showOverlay(labelId, frame) {
+  if (!overlay) return;
   const name = labelDisplayName(labelId);
   overlay.innerHTML = `<span class="overlay-label">${name}</span><span class="overlay-frame">frame ${frame}</span>`;
   overlay.classList.remove("hidden");
