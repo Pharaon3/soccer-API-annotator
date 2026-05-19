@@ -191,6 +191,22 @@ def _login_redirect() -> RedirectResponse:
     return RedirectResponse(url="/", status_code=302)
 
 
+def _is_browser_page_path(path: str) -> bool:
+    normalized = path.rstrip("/") or "/"
+    return normalized in ("/app", "/app/test")
+
+
+def _should_redirect_unauthenticated(request: Request) -> bool:
+    if request.url.path.startswith("/api/"):
+        return False
+    if _is_browser_page_path(request.url.path):
+        return True
+    accept = request.headers.get("accept", "")
+    if "application/json" in accept and "text/html" not in accept:
+        return False
+    return "text/html" in accept
+
+
 class ConnectionManager:
     def __init__(self) -> None:
         self.connections: set[WebSocket] = set()
@@ -867,6 +883,21 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Soccer Annotator API", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def redirect_unauthenticated_browser(request: Request, call_next):
+    if request.method == "GET" and _is_browser_page_path(request.url.path):
+        if not _is_authenticated(request):
+            return _login_redirect()
+    return await call_next(request)
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> Response:
+    if exc.status_code == 401 and _should_redirect_unauthenticated(request):
+        return _login_redirect()
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
 @app.post("/api/annotate")
 async def annotate(
     body: AnnotateRequest,
@@ -1231,6 +1262,7 @@ async def serve_root(request: Request) -> Response:
 
 
 @app.get("/app")
+@app.get("/app/")
 async def serve_app(request: Request) -> Response:
     if not _is_authenticated(request):
         return _login_redirect()
@@ -1238,6 +1270,7 @@ async def serve_app(request: Request) -> Response:
 
 
 @app.get("/app/test")
+@app.get("/app/test/")
 async def serve_test_app(request: Request) -> Response:
     if not _is_authenticated(request):
         return _login_redirect()
