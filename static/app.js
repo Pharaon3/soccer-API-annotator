@@ -1,5 +1,6 @@
 const DEFAULT_FPS = 25;
 const API_RESPONSE_SEC = 22;
+const VIDEO_POLL_INTERVAL_MS = 2000;
 const IS_TEST_PAGE = document.body.dataset.page === "test";
 const PENDING_ANNOTATE_KEY = "pendingAnnotateJob";
 
@@ -95,6 +96,7 @@ let testNextDeadline = null;
 let pendingTestJob = null;
 let nextTestRoundAtSec = null;
 let loadedVideoJobId = null;
+let videoPollAbort = null;
 
 function wsUrl() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -368,13 +370,46 @@ function stripVideoUrlHash(url) {
   return i >= 0 ? url.slice(0, i) : url;
 }
 
-function resolvePlaybackUrl(data) {
-  if (data.video_file) {
-    return new URL(data.video_file, location.origin).href;
+function jobVideoId(data) {
+  return data.video_id || data.video_key || null;
+}
+
+function serverVideoApiPath(videoId) {
+  return `/api/video/${encodeURIComponent(videoId)}`;
+}
+
+function stopVideoPoll() {
+  if (videoPollAbort) {
+    videoPollAbort.aborted = true;
+    videoPollAbort = null;
   }
-  if (data.video_url) {
-    return data.video_url;
+}
+
+async function waitForServerVideo(videoId, deadlineAtSec) {
+  stopVideoPoll();
+  const abort = { aborted: false };
+  videoPollAbort = abort;
+  const path = serverVideoApiPath(videoId);
+  const deadlineMs =
+    (deadlineAtSec ?? Date.now() / 1000 + API_RESPONSE_SEC) * 1000;
+
+  while (!abort.aborted && Date.now() < deadlineMs) {
+    try {
+      const resp = await fetch(path, { method: "HEAD", cache: "no-store" });
+      if (resp.ok) {
+        videoPollAbort = null;
+        return new URL(path, location.origin).href;
+      }
+    } catch (err) {
+      console.debug("video poll", videoId, err);
+    }
+    const left = deadlineMs - Date.now();
+    if (left <= 0) break;
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(VIDEO_POLL_INTERVAL_MS, left))
+    );
   }
+  videoPollAbort = null;
   return null;
 }
 
@@ -729,13 +764,20 @@ function waitForVideoAtOffset(offset) {
 }
 
 async function startAnnotatorJob(data) {
-  const url = resolvePlaybackUrl(data);
-  if (!url) return;
+  const videoId = jobVideoId(data);
+  if (!videoId) return;
 
-  if (data.job_id === loadedVideoJobId && sameVideoUrl(video.src, url)) {
-    return;
+  const deadlineAt =
+    data.deadline_at ?? Date.now() / 1000 + (data.duration_sec ?? API_RESPONSE_SEC);
+
+  if (data.job_id === loadedVideoJobId && video.src) {
+    const expected = serverVideoApiPath(videoId);
+    if (video.src.includes(encodeURIComponent(videoId)) || video.src.includes(videoId)) {
+      return;
+    }
   }
 
+  stopVideoPoll();
   currentJobId = data.job_id;
   loadedVideoJobId = data.job_id;
   jobEvents = [];
@@ -752,11 +794,24 @@ async function startAnnotatorJob(data) {
   const total = data.annotator_total ?? 1;
   const prefix = IS_TEST_PAGE ? "Test round" : "Job active";
   if (jobInfo) {
-    jobInfo.textContent = `${prefix} · start ${jobStartOffset.toFixed(1)}s · ${index}/${total}`;
+    jobInfo.textContent = `${prefix} · waiting for video ${videoId}… · ${index}/${total}`;
   }
 
   showVideoReady();
   video.pause();
+  const url = await waitForServerVideo(videoId, deadlineAt);
+  if (!url) {
+    if (jobInfo) {
+      jobInfo.textContent = `Video not ready before API deadline (${videoId})`;
+    }
+    hideVideoReady();
+    return;
+  }
+
+  if (jobInfo) {
+    jobInfo.textContent = `${prefix} · start ${jobStartOffset.toFixed(1)}s · ${index}/${total}`;
+  }
+
   try {
     await waitForVideoMetadata(url);
     const offset = jobStartOffset;
@@ -833,6 +888,7 @@ function handleMessage(data) {
         if (pendingTestJob) {
           const job = applyRoleAckToJob(pendingTestJob, data);
           pendingTestJob = null;
+          beginJobCountdown(job);
           startAnnotatorJob(job);
         }
       }
@@ -1060,7 +1116,7 @@ function renderVideoList(videos) {
     const date = v.saved_at
       ? new Date(v.saved_at * 1000).toLocaleString()
       : "—";
-    btn.innerHTML = `<strong>${v.video_key}</strong><br>${v.event_count} events · ${date}`;
+    btn.innerHTML = `<strong>${v.video_id || v.video_key}</strong><br>${v.event_count} events · ${date}`;
     btn.addEventListener("click", () => loadReviewerVideo(v, btn));
     li.appendChild(btn);
     videoList.appendChild(li);
@@ -1070,10 +1126,11 @@ function renderVideoList(videos) {
 async function loadReviewerVideo(item, btn) {
   videoList.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
   btn.classList.add("active");
-  reviewerVideo.src = item.video_file
-    ? new URL(item.video_file, location.origin).href
-    : item.video_url;
-  reviewerMeta.textContent = item.video_url || item.video_key;
+  const vid = item.video_id || item.video_key;
+  reviewerVideo.src = vid
+    ? new URL(serverVideoApiPath(vid), location.origin).href
+    : item.video_url || "";
+  reviewerMeta.textContent = item.video_url || vid;
   try {
     const res = await apiFetch(item.annotations_file);
     const data = await res.json();
