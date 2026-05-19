@@ -50,9 +50,7 @@ const videoReady = document.getElementById("video-ready");
 const videoSeek = document.getElementById("video-seek");
 const timelineMarkers = document.getElementById("timeline-markers");
 const videoTimeline = document.getElementById("video-timeline");
-const timelineZoneBefore = document.getElementById("timeline-zone-before");
-const timelineZoneActive = document.getElementById("timeline-zone-active");
-const timelineZoneAfter = document.getElementById("timeline-zone-after");
+const timelineTrack = document.getElementById("timeline-track");
 let timelineTooltip = null;
 
 const PARTICIPANT_COLORS = [
@@ -142,15 +140,53 @@ function computeSegmentBounds(index, total, windowSec = 30) {
   return { coreStart, coreEnd, playStart, playEnd };
 }
 
+function timelineSegmentsFromBounds(
+  playStart,
+  playEnd,
+  coreStart,
+  coreEnd,
+  windowSec
+) {
+  const segs = [];
+  let t = 0;
+  const push = (to, type) => {
+    const end = Math.min(to, windowSec);
+    if (end > t + 0.001) {
+      segs.push({ from: t, to: end, type });
+      t = end;
+    }
+  };
+  if (playStart > 0) push(playStart, "disabled");
+  if (coreStart > playStart) push(coreStart, "padding");
+  if (coreEnd > coreStart) push(coreEnd, "core");
+  if (playEnd > coreEnd) push(playEnd, "padding");
+  if (windowSec > playEnd) push(windowSec, "disabled");
+  return segs;
+}
+
 function updateTimelineZones() {
-  if (!timelineZoneBefore || !timelineZoneActive || !timelineZoneAfter) return;
+  if (!timelineTrack) return;
   const windowSec = jobWindowSec || 30;
-  const beforePct = (jobCoreGlobalStart / windowSec) * 100;
-  const activePct = ((jobCoreGlobalEnd - jobCoreGlobalStart) / windowSec) * 100;
-  const afterPct = 100 - beforePct - activePct;
-  timelineZoneBefore.style.width = `${Math.max(0, beforePct)}%`;
-  timelineZoneActive.style.width = `${Math.max(0, activePct)}%`;
-  timelineZoneAfter.style.width = `${Math.max(0, afterPct)}%`;
+  const segs = timelineSegmentsFromBounds(
+    jobPlayGlobalStart,
+    jobPlayGlobalEnd,
+    jobCoreGlobalStart,
+    jobCoreGlobalEnd,
+    windowSec
+  );
+  timelineTrack.innerHTML = segs
+    .map(({ from, to, type }) => {
+      const pct = ((to - from) / windowSec) * 100;
+      return `<div class="timeline-zone timeline-zone-${type}" style="width:${pct}%"></div>`;
+    })
+    .join("");
+}
+
+function isInAnnotationRange(globalT) {
+  return (
+    globalT >= jobCoreGlobalStart - 0.001 &&
+    globalT <= jobCoreGlobalEnd + 0.001
+  );
 }
 
 function setStatusMessage(text, target = roleStatus) {
@@ -768,8 +804,11 @@ function handleJobEvent(data) {
 
 function playbackLocalBounds() {
   const start = localTimeFromGlobal(jobPlayGlobalStart);
-  const end = localTimeFromGlobal(jobPlayGlobalEnd);
-  return { start, end };
+  let end = localTimeFromGlobal(jobPlayGlobalEnd);
+  if (video.duration && Number.isFinite(video.duration)) {
+    end = Math.min(end, video.duration);
+  }
+  return { start, Math.max(start, end) };
 }
 
 function clampPlaybackToSegment() {
@@ -921,7 +960,8 @@ function removeSessionEvent(eventId) {
 
 function annotate(labelId) {
   if (!currentJobId || !video.src) return;
-  const time_sec = video.currentTime + (jobTimeOrigin || 0);
+  const time_sec = globalTimeFromVideo();
+  if (!isInAnnotationRange(time_sec)) return;
   const frame = timeToFrame(time_sec);
   showOverlay(labelId, frame);
   send({

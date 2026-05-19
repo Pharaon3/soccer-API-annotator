@@ -1029,6 +1029,16 @@ body.page-review #reviewer-video {
   opacity: 0.55;
 }
 
+.timeline-zone-padding {
+  background: #4a6a94;
+  opacity: 0.8;
+}
+
+.timeline-zone-core {
+  background: var(--accent);
+  opacity: 0.95;
+}
+
 .timeline-zone-active {
   background: var(--accent);
   opacity: 0.95;

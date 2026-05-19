@@ -81,12 +81,22 @@ def segment_duration_sec(rank: int, total: int) -> float:
     return segment_end_sec(rank, total) - segment_start_sec(rank, total)
 
 
-def playback_timing_for_rank(rank: int, total: int) -> dict[str, float]:
-    """Map annotator rank to local playback range and global timeline origin."""
+def padded_playback_bounds(
+    rank: int, total: int
+) -> tuple[float, float, float, float]:
+    """Core segment plus ±SEGMENT_PADDING_SEC, clamped to the 30s window."""
     global_start = segment_start_sec(rank, total)
     global_end = segment_end_sec(rank, total)
     play_start = max(0.0, global_start - SEGMENT_PADDING_SEC)
     play_end = min(SEGMENT_WINDOW_SEC, global_end + SEGMENT_PADDING_SEC)
+    return play_start, play_end, global_start, global_end
+
+
+def playback_timing_for_rank(rank: int, total: int) -> dict[str, float]:
+    """Map annotator rank to local playback range and global timeline origin."""
+    play_start, play_end, global_start, global_end = padded_playback_bounds(
+        rank, total
+    )
     clip_duration = play_end - play_start
     if annotator_uses_original_video(rank):
         return {
@@ -478,8 +488,8 @@ class ConnectionManager:
         segment_ranks = [rank for rank in range(2, x + 1)]
 
         async def encode_and_notify(rank: int) -> None:
-            start = segment_start_sec(rank, x)
-            duration = segment_duration_sec(rank, x)
+            start, play_end, _, _ = padded_playback_bounds(rank, x)
+            duration = play_end - start
             dest = segment_video_path(video_id, rank)
             step_started = time.time()
             await split_video_segment(video_path, dest, start, duration)
