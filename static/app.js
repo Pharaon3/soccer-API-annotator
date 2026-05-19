@@ -427,7 +427,11 @@ function stripVideoUrlHash(url) {
 }
 
 function jobVideoId(data) {
-  return data.video_id || null;
+  const index = data.annotator_index ?? 1;
+  if (index === 1 && data.original_video_id) {
+    return data.original_video_id;
+  }
+  return data.video_id || data.original_video_id || null;
 }
 
 function serverVideoApiPath(videoId) {
@@ -907,7 +911,7 @@ async function startAnnotatorJob(data) {
 
   try {
     await waitForVideoMetadata(url);
-    const offset = 0;
+    const offset = jobStartOffset || 0;
     await waitForVideoAtOffset(offset);
     updateTimelineSeekRange();
     estimateFps();

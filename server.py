@@ -351,20 +351,29 @@ class ConnectionManager:
     ) -> dict[str, Any]:
         x = job.segment_total
         start_offset, seg_end = self.segment_bounds(rank, total=x)
+        clip_duration = segment_duration_sec(rank, x)
+        if annotator_uses_original_video(rank):
+            playback_video_id = job.video_id
+            playback_start = start_offset
+            playback_end = seg_end
+        else:
+            playback_video_id = segment_video_id(job.video_id, rank)
+            playback_start = 0.0
+            playback_end = clip_duration
         return {
             "type": "annotate_start",
             "job_id": job.job_id,
-            "video_id": segment_video_id(job.video_id, rank),
+            "video_id": playback_video_id,
             "original_video_id": job.video_id,
             "video_file": public_video_path(job.video_id),
             "source_url": job.video_url,
             "annotator_id": session.annotator_id,
             "annotator_index": rank,
             "annotator_total": x,
-            "start_offset_sec": 0,
+            "start_offset_sec": playback_start,
             "time_origin_sec": start_offset,
-            "segment_end_sec": segment_duration_sec(rank, x),
-            "clip_duration_sec": segment_duration_sec(rank, x),
+            "segment_end_sec": playback_end,
+            "clip_duration_sec": clip_duration,
             "segment_window_sec": SEGMENT_WINDOW_SEC,
             "duration_sec": ANNOTATE_DURATION_SEC,
             "seconds_left": api_seconds_left(job.deadline_at),
@@ -512,6 +521,11 @@ def cache_paths(video_id: str) -> tuple[Path, Path, Path]:
     events_file = ANNOTATIONS_DIR / f"{video_id}.json"
     return meta, events_file, VIDEOS_DIR / f"{video_id}.mp4"
 
+def annotator_uses_original_video(rank: int) -> bool:
+    """First annotator plays the full downloaded file; others get encoded slices."""
+    return rank == 1
+
+
 def segment_video_id(video_id: str, rank: int) -> str:
     return f"{video_id}_part_{rank}"
 
@@ -615,11 +629,13 @@ async def create_user_segments(
             rank=rank,
         )
 
-    await asyncio.gather(*[split_one(rank) for rank in range(1, total + 1)])
+    segment_ranks = [rank for rank in range(2, total + 1)]
+    if segment_ranks:
+        await asyncio.gather(*[split_one(rank) for rank in segment_ranks])
 
     total_bytes = sum(
         segment_video_path(video_id, rank).stat().st_size
-        for rank in range(1, total + 1)
+        for rank in segment_ranks
         if segment_video_path(video_id, rank).is_file()
     )
     logger.debug(
