@@ -499,6 +499,37 @@ def segment_video_path(video_id: str, rank: int) -> Path:
     return VIDEOS_DIR / f"{segment_video_id(video_id, rank)}.mp4"
 
 
+def _elapsed_since(started_at: float) -> float:
+    return time.time() - started_at
+
+
+def _log_video_saved(
+    *,
+    job_id: str,
+    video_id: str,
+    label: str,
+    path: Path,
+    api_started_at: float,
+    step_duration: float | None = None,
+    rank: int | None = None,
+    cached: bool = False,
+) -> None:
+    rank_part = f" rank={rank}" if rank is not None else ""
+    step_part = f" step={step_duration:.2f}s" if step_duration is not None else ""
+    cache_part = " (cached)" if cached else ""
+    logger.info(
+        "Video timing job=%s video_id=%s%s %s file=%s%s elapsed_since_api=%.2fs%s",
+        job_id,
+        video_id,
+        rank_part,
+        label,
+        path.name,
+        cache_part,
+        _elapsed_since(api_started_at),
+        step_part,
+    )
+
+
 async def split_video_segment(src: Path, dest: Path, start: float, duration: float) -> None:
     if dest.is_file():
         return
@@ -522,16 +553,33 @@ async def split_video_segment(src: Path, dest: Path, start: float, duration: flo
     )
 
 
-async def create_user_segments(video_id: str, video_path: Path, total: int) -> None:
-    tasks = []
-
-    for rank in range(1, total + 1):
+async def create_user_segments(
+    video_id: str,
+    video_path: Path,
+    total: int,
+    *,
+    job_id: str,
+    api_started_at: float,
+) -> None:
+    async def split_one(rank: int) -> None:
         start = segment_start_sec(rank, total)
         duration = segment_duration_sec(rank, total)
         dest = segment_video_path(video_id, rank)
-        tasks.append(split_video_segment(video_path, dest, start, duration))
+        already_exists = dest.is_file()
+        step_started = time.time()
+        await split_video_segment(video_path, dest, start, duration)
+        _log_video_saved(
+            job_id=job_id,
+            video_id=video_id,
+            label="segment",
+            path=dest,
+            api_started_at=api_started_at,
+            step_duration=time.time() - step_started,
+            rank=rank,
+            cached=already_exists,
+        )
 
-    await asyncio.gather(*tasks)
+    await asyncio.gather(*[split_one(rank) for rank in range(1, total + 1)])
 
 def load_cached(video_url: str) -> dict[str, Any] | None:
     try:
@@ -589,15 +637,39 @@ async def run_annotate_job(video_url: str) -> dict[str, Any]:
     active_jobs[job_id] = job
     job_events[job_id] = []
 
-    async def download_task() -> None:
-        try:
-            await ensure_video_downloaded(video_url, video_path)
-            logger.info("Video %s saved to %s", video_id, video_path.name)
-        except httpx.HTTPError:
-            logger.exception("Video download failed for %s", video_id)
+    logger.info(
+        "Video timing job=%s video_id=%s API requested annotators=%d",
+        job_id,
+        video_id,
+        x,
+    )
 
+    source_cached = video_path.is_file()
+    download_started = time.time()
     await ensure_video_downloaded(video_url, video_path)
-    await create_user_segments(video_id, video_path, x)
+    _log_video_saved(
+        job_id=job_id,
+        video_id=video_id,
+        label="source",
+        path=video_path,
+        api_started_at=started_at,
+        step_duration=time.time() - download_started,
+        cached=source_cached,
+    )
+
+    segments_started = time.time()
+    await create_user_segments(
+        video_id, video_path, x, job_id=job_id, api_started_at=started_at
+    )
+    logger.info(
+        "Video timing job=%s video_id=%s all segments done (count=%d) "
+        "segments_total_step=%.2fs elapsed_since_api=%.2fs",
+        job_id,
+        video_id,
+        x,
+        time.time() - segments_started,
+        _elapsed_since(started_at),
+    )
 
     logger.info("Annotate job %s video_id=%s: %d users %s", job_id, video_id, x, rank_by_id)
     await manager.broadcast_annotate_job(job)
@@ -764,12 +836,20 @@ async def annotate(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    api_started_at = time.time()
+    logger.info("Annotate API request received url=%s", video_url)
+
     try:
         result = await run_annotate_job(video_url)
     except httpx.HTTPError as exc:
         logger.exception("Annotate job failed")
         raise HTTPException(status_code=502, detail=f"Request failed: {exc}") from exc
 
+    logger.info(
+        "Annotate API response ready url=%s elapsed_since_request=%.2fs",
+        video_url,
+        _elapsed_since(api_started_at),
+    )
     return JSONResponse(content=result)
 
 
