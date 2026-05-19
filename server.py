@@ -29,12 +29,14 @@ from auth import (
     SESSION_TTL_SEC,
     auth_cookie_params,
     create_session,
+    purge_expired_sessions,
     revoke_session,
+    validate_startup_config,
     verify_api_key,
-    verify_password_hash,
     verify_password_plain,
     verify_session,
 )
+from labels import LABEL_IDS, labels_api_payload
 
 load_dotenv()
 
@@ -52,24 +54,6 @@ STATIC_DIR = ROOT / "static"
 
 for d in (VIDEOS_DIR, ANNOTATIONS_DIR, STATIC_DIR):
     d.mkdir(parents=True, exist_ok=True)
-
-LABELS = [
-    "pass",
-    "pass_received",
-    "recovery",
-    "tackle",
-    "interception",
-    "ball_out_of_play",
-    "clearance",
-    "take_on",
-    "substitution",
-    "block",
-    "aerial_duel",
-    "shot",
-    "save",
-    "foul",
-    "goal",
-]
 
 ANNOTATE_DURATION_SEC = 22
 CACHE_DELAY_MIN_SEC = 10
@@ -168,9 +152,8 @@ class AnnotateRequest(BaseModel):
     video_url: HttpUrl
 
 
-class VerifyHashRequest(BaseModel):
-    password_hash: str | None = Field(default=None, min_length=64, max_length=64)
-    password: str | None = Field(default=None, min_length=1, max_length=256)
+class LoginRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
 
 
 def _auth_token(request: Request) -> str | None:
@@ -552,7 +535,7 @@ def _log_video_saved(
     if path.is_file():
         size_mb = path.stat().st_size / (1024 * 1024)
         size_part = f" size={size_mb:.2f}MB"
-    logger.info(
+    logger.debug(
         "Video timing job=%s video_id=%s%s %s file=%s%s elapsed_since_api=%.2fs%s%s",
         job_id,
         video_id,
@@ -632,7 +615,7 @@ async def create_user_segments(
         for rank in range(1, total + 1)
         if segment_video_path(video_id, rank).is_file()
     )
-    logger.info(
+    logger.debug(
         "Video timing job=%s video_id=%s segments_total_size=%.2fMB elapsed_since_api=%.2fs",
         job_id,
         video_id,
@@ -697,21 +680,10 @@ async def run_annotate_job(video_url: str) -> dict[str, Any]:
     active_jobs[job_id] = job
     job_events[job_id] = []
 
-    logger.info(
-        "Video timing job=%s video_id=%s API requested annotators=%d",
-        job_id,
-        video_id,
-        x,
-    )
+    logger.info("Annotate job %s started video_id=%s annotators=%d", job_id, video_id, x)
 
     source_cached = video_path.is_file()
     download_started = time.time()
-    logger.info(
-        "Video timing job=%s video_id=%s download_start cached=%s",
-        job_id,
-        video_id,
-        source_cached,
-    )
     await ensure_video_downloaded(video_url, video_path)
     _log_video_saved(
         job_id=job_id,
@@ -724,30 +696,15 @@ async def run_annotate_job(video_url: str) -> dict[str, Any]:
     )
 
     segments_started = time.time()
-    logger.info(
-        "Video timing job=%s video_id=%s segment_encode_start count=%d %s fps=%d crf=%d preset=%s",
-        job_id,
-        video_id,
-        x,
-        SEGMENT_SCALE_FILTER,
-        SEGMENT_FPS,
-        SEGMENT_CRF,
-        SEGMENT_FFMPEG_PRESET,
-    )
     await create_user_segments(
         video_id, video_path, x, job_id=job_id, api_started_at=started_at
     )
-    logger.info(
-        "Video timing job=%s video_id=%s all segments done (count=%d) "
-        "segments_total_step=%.2fs elapsed_since_api=%.2fs",
+    logger.debug(
+        "Annotate job %s segments encoded count=%d in %.2fs",
         job_id,
-        video_id,
         x,
         time.time() - segments_started,
-        _elapsed_since(started_at),
     )
-
-    logger.info("Annotate job %s video_id=%s: %d users %s", job_id, video_id, x, rank_by_id)
     await manager.broadcast_annotate_job(job)
 
     remaining = deadline_at - time.time()
@@ -869,21 +826,41 @@ async def _test_scheduler_loop() -> None:
             await manager.broadcast_test_schedule()
 
 
+async def _session_maintenance_loop() -> None:
+    while True:
+        await asyncio.sleep(300)
+        purge_expired_sessions()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     del app
-    if not APP_PASSWORD_HASH:
-        logger.warning("APP_PASSWORD_HASH is not set — web login will fail")
-    task = asyncio.create_task(_test_scheduler_loop())
+    validate_startup_config()
+    test_task = asyncio.create_task(_test_scheduler_loop())
+    session_task = asyncio.create_task(_session_maintenance_loop())
     yield
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    for task in (test_task, session_task):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="Soccer Annotator API", lifespan=lifespan)
+
+_STATIC_CACHE_PATHS = frozenset({"/app.js", "/login.js", "/styles.css"})
+
+
+@app.middleware("http")
+async def security_and_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    if request.url.path in _STATIC_CACHE_PATHS:
+        response.headers["Cache-Control"] = "public, max-age=3600"
+    return response
 
 
 @app.middleware("http")
@@ -948,7 +925,7 @@ def _list_videos_data() -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for meta_file in sorted(ANNOTATIONS_DIR.glob("*.meta.json")):
         meta = json.loads(meta_file.read_text(encoding="utf-8"))
-        vid = meta.get("video_id") or meta.get("video_key")
+        vid = meta.get("video_id")
         if not vid:
             continue
         events_file = ANNOTATIONS_DIR / f"{vid}.json"
@@ -969,14 +946,18 @@ def _list_videos_data() -> list[dict[str, Any]]:
     return items
 
 
-@app.post("/api/auth/verify")
-async def auth_verify(body: VerifyHashRequest) -> JSONResponse:
-    ok = False
-    if body.password_hash:
-        ok = verify_password_hash(body.password_hash)
-    elif body.password:
-        ok = verify_password_plain(body.password)
-    if not ok:
+@app.get("/api/health")
+async def health() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "annotators_connected": manager.annotator_count,
+        "test_annotators_connected": manager.test_annotator_count,
+    }
+
+
+@app.post("/api/auth/login")
+async def auth_login(body: LoginRequest) -> JSONResponse:
+    if not verify_password_plain(body.password):
         raise HTTPException(status_code=401, detail="Invalid password")
     token = create_session()
     response = JSONResponse(content={"ok": True})
@@ -1035,9 +1016,15 @@ async def get_annotations(video_id: str, request: Request) -> dict[str, Any]:
 
 
 @app.get("/api/labels")
-async def get_labels(request: Request) -> list[str]:
+async def get_labels(request: Request) -> dict[str, Any]:
     _require_auth(request)
-    return LABELS
+    return labels_api_payload()
+
+
+@app.post("/api/auth/verify")
+async def auth_verify_legacy(body: LoginRequest) -> JSONResponse:
+    """Deprecated alias for POST /api/auth/login."""
+    return await auth_login(body)
 
 
 @app.websocket("/ws")
@@ -1054,7 +1041,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         while True:
             raw = await websocket.receive_text()
-            data = json.loads(raw)
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
             msg_type = data.get("type")
 
             if msg_type == "set_role":
@@ -1132,7 +1122,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 job_id = data.get("job_id")
                 label = data.get("label")
                 time_sec = data.get("time_sec")
-                if label not in LABELS or job_id not in active_test_jobs:
+                if label not in LABEL_IDS or job_id not in active_test_jobs:
                     continue
                 pid = annotator_session.annotator_id if annotator_session else 0
                 event = {
@@ -1151,7 +1141,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 job_id = data.get("job_id")
                 label = data.get("label")
                 time_sec = data.get("time_sec")
-                if label not in LABELS or job_id not in job_events:
+                if label not in LABEL_IDS or job_id not in job_events:
                     continue
                 pid = annotator_session.annotator_id if annotator_session else 0
                 event = {
@@ -1173,7 +1163,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 label = data.get("label")
                 time_sec = data.get("time_sec")
                 uid = data.get("uid")
-                if label not in LABELS or not job_id:
+                if label not in LABEL_IDS or not job_id:
                     continue
                 pid = annotator_session.annotator_id if annotator_session else 0
                 if role == "test":
@@ -1230,31 +1220,10 @@ def _static_file(name: str) -> FileResponse:
     return FileResponse(path, media_type=media)
 
 
-def _escape_js_string(value: str) -> str:
-    return (
-        value.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\r", "")
-        .replace("\n", "\\n")
-        .replace("<", "\\u003c")
-    )
-
-
-def _serve_login_page() -> Response:
-    html_path = STATIC_DIR / "login.html"
-    if not html_path.is_file():
-        raise HTTPException(status_code=404, detail="login.html not found")
-    html = html_path.read_text(encoding="utf-8")
+def _serve_login_page() -> FileResponse:
     if not APP_PASSWORD_HASH:
-        raise HTTPException(status_code=500, detail="APP_PASSWORD_HASH not configured")
-    inject = (
-        f'<script>window.APP_PASSWORD_HASH="{_escape_js_string(APP_PASSWORD_HASH)}";</script>'
-    )
-    if "</head>" in html:
-        html = html.replace("</head>", f"  {inject}\n</head>", 1)
-    else:
-        html = inject + html
-    return Response(content=html, media_type="text/html")
+        raise HTTPException(status_code=503, detail="Login is not configured on this server")
+    return _static_file("login.html")
 
 
 @app.get("/")

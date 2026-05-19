@@ -8,25 +8,8 @@ let wsAuthed = false;
 let wsConnectResolve = null;
 let wsConnectingPromise = null;
 
-const LABELS = [
-  { id: "pass", key: "p", display: "Pass" },
-  { id: "pass_received", key: "[", display: "Pass received" },
-  { id: "recovery", key: "r", display: "Recovery" },
-  { id: "tackle", key: "t", display: "Tackle" },
-  { id: "interception", key: "i", display: "Interception" },
-  { id: "ball_out_of_play", key: "o", display: "Ball out" },
-  { id: "clearance", key: "c", display: "Clearance" },
-  { id: "take_on", key: "y", display: "Take on" },
-  { id: "substitution", key: "x", display: "Substitution" },
-  { id: "block", key: "b", display: "Block" },
-  { id: "aerial_duel", key: "a", display: "Aerial duel" },
-  { id: "shot", key: "s", display: "Shot" },
-  { id: "save", key: "v", display: "Save" },
-  { id: "foul", key: "f", display: "Foul" },
-  { id: "goal", key: "g", display: "Goal" },
-];
-
-const keyToLabel = Object.fromEntries(LABELS.map((l) => [l.key, l.id]));
+let LABELS = [];
+let keyToLabel = {};
 
 const roleScreen = document.getElementById("role-screen");
 const annotatorScreen = document.getElementById("annotator-screen");
@@ -98,26 +81,22 @@ let pendingTestJob = null;
 let nextTestRoundAtSec = null;
 let loadedVideoJobId = null;
 let videoPollAbort = null;
-const jobTimings = new Map();
 
-function startJobTiming(jobId, videoId) {
-  if (!jobId) return;
-  jobTimings.set(jobId, { videoId, t0: performance.now(), pollCount: 0 });
-  logJobTiming(jobId, "ws_job_received");
+function labelDisplayName(labelId) {
+  return LABELS.find((l) => l.id === labelId)?.display ?? labelId;
 }
 
-function logJobTiming(jobId, label, extra) {
-  const entry = jobTimings.get(jobId);
-  if (!entry) return;
-  const elapsedSec = (performance.now() - entry.t0) / 1000;
-  const suffix = extra != null ? ` ${JSON.stringify(extra)}` : "";
-  console.log(
-    `[annotator timing] job=${jobId} video=${entry.videoId} ${label} @ ${elapsedSec.toFixed(2)}s${suffix}`
-  );
+async function loadLabelConfig() {
+  const res = await apiFetch("/api/labels");
+  if (!res.ok) throw new Error("Failed to load labels");
+  const data = await res.json();
+  LABELS = data.labels || [];
+  keyToLabel = Object.fromEntries(LABELS.map((l) => [l.key, l.id]));
 }
 
-function clearJobTiming(jobId) {
-  if (jobId) jobTimings.delete(jobId);
+function setStatusMessage(text, target = roleStatus) {
+  if (target) target.textContent = text;
+  else if (jobInfo) jobInfo.textContent = text;
 }
 
 function wsUrl() {
@@ -384,8 +363,6 @@ function goToAnnotatorForJob(data) {
     redirectToAnnotatorForApiJob(data);
     return;
   }
-  startJobTiming(data.job_id, jobVideoId(data));
-  logJobTiming(data.job_id, "ui_prepare");
   hideRoleModal();
   buildLabelButtons();
   showScreen(annotatorScreen);
@@ -435,7 +412,7 @@ function stripVideoUrlHash(url) {
 }
 
 function jobVideoId(data) {
-  return data.video_id || data.video_key || null;
+  return data.video_id || null;
 }
 
 function serverVideoApiPath(videoId) {
@@ -449,17 +426,12 @@ function stopVideoPoll() {
   }
 }
 
-function waitForServerVideo(videoId, secondsLeft = API_RESPONSE_SEC, jobId = null) {
+function waitForServerVideo(videoId, secondsLeft = API_RESPONSE_SEC) {
   stopVideoPoll();
 
   const path = serverVideoApiPath(videoId);
   const abort = { aborted: false, controllers: [] };
   videoPollAbort = abort;
-  const pollStarted = performance.now();
-
-  if (jobId) {
-    logJobTiming(jobId, "video_poll_start", { path, secondsLeft });
-  }
 
   return new Promise((resolve) => {
     let resolved = false;
@@ -471,21 +443,11 @@ function waitForServerVideo(videoId, secondsLeft = API_RESPONSE_SEC, jobId = nul
       clearTimeout(totalTimeout);
       abort.controllers.forEach((c) => c.abort());
       videoPollAbort = null;
-      if (jobId) {
-        const entry = jobTimings.get(jobId);
-        logJobTiming(jobId, value ? "video_poll_ready" : "video_poll_timeout", {
-          polls: entry?.pollCount ?? 0,
-          pollDurationSec: ((performance.now() - pollStarted) / 1000).toFixed(2),
-        });
-      }
       resolve(value);
     };
 
     const callVideoApi = () => {
       if (abort.aborted || resolved) return;
-
-      const entry = jobId ? jobTimings.get(jobId) : null;
-      if (entry) entry.pollCount += 1;
 
       const controller = new AbortController();
       abort.controllers.push(controller);
@@ -493,11 +455,6 @@ function waitForServerVideo(videoId, secondsLeft = API_RESPONSE_SEC, jobId = nul
       const requestTimeout = setTimeout(() => {
         controller.abort();
       }, 5000);
-
-      const pollNum = entry?.pollCount ?? 0;
-      if (jobId && (pollNum === 1 || pollNum % 5 === 0)) {
-        logJobTiming(jobId, "video_poll_attempt", { attempt: pollNum });
-      }
 
       fetch(path, {
         method: "GET",
@@ -614,10 +571,7 @@ function showTimelineMarkerTooltip(marker) {
   if (!tip || !marker) return;
 
   const labelName =
-    marker.dataset.labelName ||
-    LABELS.find((l) => l.id === marker.dataset.label)?.display ||
-    marker.dataset.label ||
-    "Event";
+    marker.dataset.labelName || labelDisplayName(marker.dataset.label) || "Event";
   const frame = marker.dataset.frame ?? "—";
   const timeSec = Number(marker.dataset.time);
   const timeText = Number.isFinite(timeSec) ? `${timeSec.toFixed(2)}s` : "—";
@@ -658,8 +612,7 @@ function renderTimelineMarkers() {
       const pct = Math.min(100, Math.max(0, (e.time_sec / duration) * 100));
       const color = LABEL_COLORS[e.label] || "#94a3b8";
       const mine = e.participant_id === myParticipantId;
-      const labelName =
-        LABELS.find((l) => l.id === e.label)?.display ?? e.label;
+      const labelName = labelDisplayName(e.label);
       const who = mine ? "You" : `Annotator #${e.participant_id}`;
       return `<button type="button" class="timeline-marker${mine ? " mine" : ""}" data-time="${e.time_sec}" data-frame="${e.frame}" data-label="${e.label}" data-label-name="${labelName}" data-who="${who}" data-event-id="${e.id ?? ""}" style="left:${pct}%;background:${color}" aria-label="${labelName}, frame ${e.frame}"></button>`;
     })
@@ -747,8 +700,7 @@ function buildLabelButtons() {
 }
 
 function showOverlay(labelId, frame) {
-  const item = LABELS.find((l) => l.id === labelId);
-  const name = item ? item.display : labelId;
+  const name = labelDisplayName(labelId);
   overlay.innerHTML = `<span class="overlay-label">${name}</span><span class="overlay-frame">frame ${frame}</span>`;
   overlay.classList.remove("hidden");
   clearTimeout(overlayTimer);
@@ -763,8 +715,7 @@ function renderSessionEvents() {
     .slice()
     .sort((a, b) => a.time_sec - b.time_sec)
     .map((e) => {
-      const labelName =
-        LABELS.find((l) => l.id === e.label)?.display ?? e.label;
+      const labelName = labelDisplayName(e.label);
       const mine = e.participant_id === myParticipantId;
       const who = mine ? "you" : `#${e.participant_id}`;
       if (mine) {
@@ -922,14 +873,10 @@ async function startAnnotatorJob(data) {
 
   showVideoReady();
   video.pause();
-  logJobTiming(currentJobId, "video_load_start");
-  const url = await waitForServerVideo(videoId, secondsLeft, currentJobId);
+  const url = await waitForServerVideo(videoId, secondsLeft);
   if (!url) {
-    if (jobInfo) {
-      jobInfo.textContent = `Video not ready before API deadline (${videoId})`;
-    }
+    setStatusMessage(`Video not ready before deadline (${videoId})`, jobInfo);
     hideVideoReady();
-    clearJobTiming(currentJobId);
     return;
   }
 
@@ -938,14 +885,7 @@ async function startAnnotatorJob(data) {
   }
 
   try {
-    const metaStarted = performance.now();
     await waitForVideoMetadata(url);
-    logJobTiming(currentJobId, "video_metadata_loaded", {
-      durationSec: video.duration,
-      width: video.videoWidth,
-      height: video.videoHeight,
-      loadSec: ((performance.now() - metaStarted) / 1000).toFixed(2),
-    });
     const offset = 0;
     await waitForVideoAtOffset(offset);
     updateTimelineSeekRange();
@@ -953,22 +893,16 @@ async function startAnnotatorJob(data) {
     try {
       video.currentTime = offset;
       await video.play();
-    } catch (err) {
-      console.warn("Autoplay blocked, retrying muted", err);
+    } catch {
       video.muted = true;
       video.currentTime = offset;
       await video.play();
     }
-    logJobTiming(currentJobId, "video_playing");
     startVideoHudLoop();
     updateVideoHud();
     renderTimelineMarkers();
-  } catch (err) {
-    console.error("Failed to load job video", err);
-    logJobTiming(currentJobId, "video_load_failed", { error: String(err) });
-    if (jobInfo) {
-      jobInfo.textContent = `Video failed to load (${url})`;
-    }
+  } catch {
+    setStatusMessage(`Video failed to load (${videoId})`, jobInfo);
   } finally {
     hideVideoReady();
   }
@@ -984,8 +918,6 @@ function handleTestStart(data) {
 }
 
 function goToTestJob(data) {
-  startJobTiming(data.job_id, jobVideoId(data));
-  logJobTiming(data.job_id, "ui_prepare_test");
   buildLabelButtons();
   showScreen(annotatorScreen);
   showVideoReady();
@@ -1094,10 +1026,8 @@ async function enterRole(selectedRole) {
     if (selectedRole === "annotator" || selectedRole === "test") {
       buildLabelButtons();
     }
-  } catch (err) {
-    if (roleStatus) roleStatus.textContent = "Could not connect to server.";
-    else if (jobInfo) jobInfo.textContent = "Could not connect to server.";
-    console.warn(err);
+  } catch {
+    setStatusMessage("Could not connect to server. Refresh and try again.");
   }
 }
 
@@ -1181,6 +1111,14 @@ function bindRoleScreenHandlers() {
 async function bootApp() {
   if (!(await ensureAuthenticated())) return;
 
+  try {
+    await loadLabelConfig();
+  } catch {
+    setStatusMessage("Could not load label configuration.");
+    hideAppBoot();
+    return;
+  }
+
   hideAppBoot();
   bindRoleScreenHandlers();
   document.querySelectorAll("#btn-logout, [data-action=logout]").forEach((btn) => {
@@ -1260,7 +1198,7 @@ function renderVideoList(videos) {
     const date = v.saved_at
       ? new Date(v.saved_at * 1000).toLocaleString()
       : "—";
-    btn.innerHTML = `<strong>${v.video_id || v.video_key}</strong><br>${v.event_count} events · ${date}`;
+    btn.innerHTML = `<strong>${v.video_id}</strong><br>${v.event_count} events · ${date}`;
     btn.addEventListener("click", () => loadReviewerVideo(v, btn));
     li.appendChild(btn);
     videoList.appendChild(li);
@@ -1270,7 +1208,7 @@ function renderVideoList(videos) {
 async function loadReviewerVideo(item, btn) {
   videoList.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
   btn.classList.add("active");
-  const vid = item.video_id || item.video_key;
+  const vid = item.video_id;
   reviewerVideo.src = vid
     ? new URL(serverVideoApiPath(vid), location.origin).href
     : item.video_url || "";
@@ -1287,7 +1225,7 @@ async function loadReviewerVideo(item, btn) {
           e.frame !== undefined
             ? e.frame
             : timeToFrame(e.time_sec);
-        return `<li><button type="button" data-time="${e.time_sec}">frame ${frame} · ${e.time_sec.toFixed(2)}s — ${e.label}</button></li>`;
+        return `<li><button type="button" data-time="${e.time_sec}">frame ${frame} · ${e.time_sec.toFixed(2)}s — ${labelDisplayName(e.label)}</button></li>`;
       })
       .join("");
     reviewerEvents.querySelectorAll("button").forEach((b) => {

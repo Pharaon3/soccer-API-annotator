@@ -29,7 +29,8 @@ Open http://localhost:8080 and log in with your app password.
 |----------|-------------|
 | `API_KEY` | Required for `POST /api/annotate` (`X-API-Key` header) |
 | `APP_PASSWORD_HASH` | SHA-256 hex of the web UI password |
-| `SESSION_SECRET` | Random string for session cookies |
+| `SESSION_SECRET` | Long random string (32+ characters) |
+| `ANNOTATOR_ENV` | Set to `production` for strict startup validation |
 | `HOST` | Bind address (default `0.0.0.0`) |
 | `PORT` | HTTP port (default `8080`) |
 | `COOKIE_SECURE` | Set `true` behind HTTPS |
@@ -41,6 +42,19 @@ Generate password hash:
 ```bash
 python -c "import hashlib; print(hashlib.sha256(b'your-password').hexdigest())"
 ```
+
+## Routes
+
+| Path | Description |
+|------|-------------|
+| `/` | Login (redirects to `/app` when authenticated) |
+| `/app` | Main annotator / reviewer UI |
+| `/app/test` | Practice test rounds |
+| `/ws` | WebSocket (requires session cookie) |
+| `/api/health` | Health check (no auth) |
+| `/api/annotate` | Annotation API (`X-API-Key`) |
+| `/api/auth/login` | Web login |
+| `/api/labels` | Label config (authenticated) |
 
 ## API
 
@@ -54,6 +68,12 @@ curl -X POST http://localhost:8080/api/annotate \
 ```
 
 Requires at least one connected annotator (open `/app` and choose **Annotator**).
+
+Health check:
+
+```bash
+curl http://localhost:8080/api/health
+```
 
 ## Label shortcuts
 
@@ -77,16 +97,19 @@ Requires at least one connected annotator (open `/app` and choose **Annotator**)
 
 ## Data layout
 
-- `data/annotations/{key}.json` — event JSON
-- `data/annotations/{key}.meta.json` — source URL metadata
+- `data/annotations/{id}.json` — event JSON
+- `data/annotations/{id}.meta.json` — source URL metadata
 - `data/videos/{video-id}.mp4` — downloaded copy (id = original file name without `.mp4`)
 
 ## Production
 
 ```bash
-export PORT=8080
+export ANNOTATOR_ENV=production
 export COOKIE_SECURE=true
+export SESSION_SECRET="$(openssl rand -hex 32)"
 uvicorn server:app --host 0.0.0.0 --port 8080 --workers 1
 ```
 
 Use a reverse proxy (nginx, Caddy) for HTTPS. WebSocket path: `/ws`.
+
+`POST /api/auth/verify` remains as a deprecated alias for `/api/auth/login`.
