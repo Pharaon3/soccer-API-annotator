@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="Crowd-sourced soccer event annotation for short video clips." />
-  <title>Annotator — Soccer Video Annotator</title>
+  <meta name="description" content="Practice annotation rounds on saved videos." />
+  <title>Practice — Soccer Video Annotator</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
-<body class="page-annotate" data-page="annotator">
+<body class="page-practice" data-page="practice">
   <div id="app-boot" class="app-boot" aria-live="polite">
     <div class="app-boot-card">
       <div class="app-boot-spinner" aria-hidden="true"></div>
@@ -31,9 +31,9 @@
           <div class="annotator-bottom">
             <div class="video-controller">
               <div class="video-controller-controls">
-              <button type="button" id="btn-play-pause" class="ctrl-btn" title="Play / Pause" aria-label="Play / Pause">▶</button>
-              <span id="video-time-display" class="time-display">0:00.00</span>
-              <span id="video-frame-display" class="frame-display">frame 0</span>
+                <button type="button" id="btn-play-pause" class="ctrl-btn" title="Play / Pause" aria-label="Play / Pause">▶</button>
+                <span id="video-time-display" class="time-display">0:00.00</span>
+                <span id="video-frame-display" class="frame-display">frame 0</span>
               </div>
               <div class="video-timeline" id="video-timeline">
                 <div class="timeline-track" aria-hidden="true">
@@ -54,15 +54,20 @@
         <section class="events-panel">
           <div class="sidebar-toolbar">
             <a href="/" class="small-btn nav-link">Home</a>
+            <a href="/annotator" class="small-btn nav-link">Annotator</a>
             <a href="/board" class="small-btn nav-link">Board</a>
-            <a href="/practice" class="small-btn nav-link">Practice</a>
             <button type="button" id="btn-logout" class="small-btn" data-action="logout">Log out</button>
+            <div id="test-next-countdown" class="api-countdown test-next-countdown hidden" aria-live="polite">
+              <span id="test-next-value" class="countdown-value">—</span>
+              <span class="countdown-unit">s</span>
+              <span class="countdown-hint">next round</span>
+            </div>
           </div>
           <p id="connection-status" class="connection-status hidden" role="alert"></p>
           <h2>Events this session</h2>
           <ul id="events-list"></ul>
         </section>
-        <span id="annotator-badge" class="sr-only">Annotator</span>
+        <span id="annotator-badge" class="sr-only">Practice</span>
         <span id="session-info" class="sr-only"></span>
         <span id="job-info" class="sr-only"></span>
       </aside>

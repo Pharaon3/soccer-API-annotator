@@ -59,7 +59,8 @@ ANNOTATE_DURATION_SEC = 22
 CACHE_DELAY_MIN_SEC = 10
 CACHE_DELAY_MAX_SEC = 15
 SEGMENT_WINDOW_SEC = 30
-TEST_INTERVAL_SEC = 30
+SEGMENT_PADDING_SEC = 1.0
+PRACTICE_INTERVAL_SEC = 30
 # Segment proxy encode: 480p height, 25 fps, H.264 ultrafast
 SEGMENT_SCALE_FILTER = "scale=-2:480"
 SEGMENT_FPS = 25
@@ -84,19 +85,25 @@ def playback_timing_for_rank(rank: int, total: int) -> dict[str, float]:
     """Map annotator rank to local playback range and global timeline origin."""
     global_start = segment_start_sec(rank, total)
     global_end = segment_end_sec(rank, total)
-    clip_duration = segment_duration_sec(rank, total)
+    play_start = max(0.0, global_start - SEGMENT_PADDING_SEC)
+    play_end = min(SEGMENT_WINDOW_SEC, global_end + SEGMENT_PADDING_SEC)
+    clip_duration = play_end - play_start
     if annotator_uses_original_video(rank):
         return {
-            "start_offset_sec": global_start,
-            "time_origin_sec": global_start,
-            "segment_end_sec": global_end,
+            "start_offset_sec": play_start,
+            "time_origin_sec": play_start,
+            "segment_end_sec": play_end,
             "clip_duration_sec": clip_duration,
+            "segment_core_start_sec": global_start,
+            "segment_core_end_sec": global_end,
         }
     return {
         "start_offset_sec": 0.0,
-        "time_origin_sec": global_start,
+        "time_origin_sec": play_start,
         "segment_end_sec": clip_duration,
         "clip_duration_sec": clip_duration,
+        "segment_core_start_sec": global_start,
+        "segment_core_end_sec": global_end,
     }
 
 
@@ -234,7 +241,7 @@ def _login_redirect() -> RedirectResponse:
     return RedirectResponse(url="/login", status_code=302)
 
 
-_PROTECTED_PAGE_PATHS = frozenset({"/", "/annotator", "/review", "/train"})
+_PROTECTED_PAGE_PATHS = frozenset({"/", "/annotator", "/board", "/practice", "/review", "/train"})
 
 
 def _is_browser_page_path(path: str) -> bool:
@@ -286,7 +293,7 @@ class ConnectionManager:
     def schedule_next_test_round(self, at: float | None = None) -> float:
         if at is None:
             now = time.time()
-            at = now + (TEST_INTERVAL_SEC - (now % TEST_INTERVAL_SEC))
+            at = now + (PRACTICE_INTERVAL_SEC - (now % PRACTICE_INTERVAL_SEC))
         self._next_test_round_at = at
         return at
 
@@ -316,7 +323,7 @@ class ConnectionManager:
                 {
                     "type": "test_schedule",
                     "next_round_at": self._next_test_round_at,
-                    "interval_sec": TEST_INTERVAL_SEC,
+                    "interval_sec": PRACTICE_INTERVAL_SEC,
                 }
             )
         )
@@ -328,7 +335,7 @@ class ConnectionManager:
             {
                 "type": "test_schedule",
                 "next_round_at": self._next_test_round_at,
-                "interval_sec": TEST_INTERVAL_SEC,
+                "interval_sec": PRACTICE_INTERVAL_SEC,
             }
         )
         dead: list[int] = []
@@ -1353,20 +1360,32 @@ async def serve_annotator(request: Request) -> Response:
     return _static_file("annotator.html")
 
 
-@app.get("/review")
-@app.get("/review/")
-async def serve_review(request: Request) -> Response:
+@app.get("/board")
+@app.get("/board/")
+async def serve_board(request: Request) -> Response:
     if not _is_authenticated(request):
         return _login_redirect()
-    return _static_file("review.html")
+    return _static_file("board.html")
+
+
+@app.get("/review")
+@app.get("/review/")
+async def redirect_review_to_board() -> RedirectResponse:
+    return RedirectResponse(url="/board", status_code=301)
+
+
+@app.get("/practice")
+@app.get("/practice/")
+async def serve_practice(request: Request) -> Response:
+    if not _is_authenticated(request):
+        return _login_redirect()
+    return _static_file("practice.html")
 
 
 @app.get("/train")
 @app.get("/train/")
-async def serve_train(request: Request) -> Response:
-    if not _is_authenticated(request):
-        return _login_redirect()
-    return _static_file("test.html")
+async def redirect_train_to_practice() -> RedirectResponse:
+    return RedirectResponse(url="/practice", status_code=301)
 
 
 @app.get("/app")
@@ -1378,7 +1397,7 @@ async def redirect_legacy_app() -> RedirectResponse:
 @app.get("/app/test")
 @app.get("/app/test/")
 async def redirect_legacy_test() -> RedirectResponse:
-    return RedirectResponse(url="/train", status_code=301)
+    return RedirectResponse(url="/practice", status_code=301)
 
 
 @app.get("/app.js")

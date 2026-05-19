@@ -41,34 +41,50 @@ body.page-annotate .video-controller {
   border-color: #2a3a52;
 }
 
-/* Practice test — subtle purple tint */
+/* Practice — subtle purple tint (only background differs from annotator) */
+body.page-practice,
 body.page-test {
   --bg: #14121c;
-  --surface: #1e1e1e;
+  --surface: #1a2332;
   --surface2: #2a2540;
   background: linear-gradient(165deg, #1a1628 0%, #14121c 45%, #100e18 100%);
 }
 
+body.page-practice .events-sidebar,
 body.page-test .events-sidebar {
   background: var(--surface);
   border-left-color: #3d3558;
 }
 
+body.page-practice .video-controller,
 body.page-test .video-controller {
   background: var(--surface);
   border-color: #3d3558;
 }
 
+body.page-practice .sidebar-toolbar,
 body.page-test .sidebar-toolbar {
   border-bottom-color: #3d3558;
 }
 
+body.page-practice #events-list li,
 body.page-test #events-list li {
   border-bottom-color: #3d3558;
 }
 
-body.page-test .badge-test {
-  background: #6b4fa8;
+/* Board (review) */
+body.page-board,
+body.page-review {
+  overflow: hidden;
+  height: 100vh;
+}
+
+body.page-board #reviewer-screen,
+body.page-review #reviewer-screen {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
 }
 
 body.no-scroll {
@@ -779,9 +795,11 @@ body.page-home {
 }
 
 .label-grid {
+  --label-color-a: #2d4a7a;
+  --label-color-b: #3a3560;
   display: grid;
-  grid-template-columns: repeat(8, 1fr);
-  grid-template-rows: repeat(2, auto);
+  grid-template-columns: repeat(5, 1fr);
+  grid-template-rows: repeat(3, auto);
   gap: 0.35rem;
   width: 100%;
   flex-shrink: 0;
@@ -803,10 +821,10 @@ body.page-home {
 .label-btn {
   flex: 1 0 auto;
   min-width: 0;
-  padding: 0.45rem 0.5rem;
-  font-size: 1rem;
+  padding: 0.45rem 0.35rem;
+  font-size: 0.82rem;
   font-weight: 700;
-  border: 2px solid rgba(255, 255, 255, 0.15);
+  border: 2px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px;
   cursor: pointer;
   color: #fff;
@@ -814,6 +832,15 @@ body.page-home {
   line-height: 1.2;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
   white-space: nowrap;
+}
+
+.label-btn.kb-row-0,
+.label-btn.kb-row-1 {
+  background: var(--label-color-a);
+}
+
+.label-btn.kb-row-2 {
+  background: var(--label-color-b);
 }
 
 .label-btn:hover {
@@ -824,22 +851,6 @@ body.page-home {
 .label-btn:active {
   transform: scale(0.97);
 }
-
-.label-btn[data-label="pass"] { background: #2563eb; }
-.label-btn[data-label="pass_received"] { background: #7c3aed; }
-.label-btn[data-label="recovery"] { background: #059669; }
-.label-btn[data-label="tackle"] { background: #dc2626; }
-.label-btn[data-label="interception"] { background: #ea580c; }
-.label-btn[data-label="ball_out_of_play"] { background: #475569; }
-.label-btn[data-label="clearance"] { background: #0891b2; }
-.label-btn[data-label="take_on"] { background: #db2777; }
-.label-btn[data-label="substitution"] { background: #ca8a04; }
-.label-btn[data-label="block"] { background: #4f46e5; }
-.label-btn[data-label="aerial_duel"] { background: #0d9488; }
-.label-btn[data-label="shot"] { background: #b91c1c; }
-.label-btn[data-label="save"] { background: #16a34a; }
-.label-btn[data-label="foul"] { background: #c2410c; }
-.label-btn[data-label="goal"] { background: #eab308; color: #1a1200; text-shadow: none; }
 
 .video-wrap {
   margin: 0;
@@ -884,26 +895,31 @@ body.page-home {
   flex-shrink: 0;
 }
 
-#reviewer-video {
+body.page-board #reviewer-video,
+body.page-review #reviewer-video {
   width: 100%;
-  max-height: 62vh;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
   background: #000;
   border-radius: 10px;
   display: block;
+  object-fit: contain;
 }
 
 .video-aspect .event-overlay {
   position: absolute;
-  left: 50%;
-  top: 45%;
-  transform: translate(-50%, -50%);
+  top: 0.65rem;
+  right: 0.65rem;
+  left: auto;
+  transform: none;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 0.35rem;
-  text-align: center;
-  padding: 1rem 2rem;
-  font-size: 2rem;
+  align-items: flex-end;
+  gap: 0.2rem;
+  text-align: right;
+  padding: 0.55rem 0.85rem;
+  font-size: 1.15rem;
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -960,9 +976,9 @@ body.page-home {
 
 .video-controller {
   display: flex;
-  flex-wrap: nowrap;
-  align-items: center;
-  gap: 0.45rem 0.65rem;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.45rem;
   margin-top: 0.4rem;
   padding: 0.45rem 0.65rem;
   flex-shrink: 0;
@@ -972,25 +988,68 @@ body.page-home {
   overflow: visible;
 }
 
+.video-controller-controls {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 0.45rem 0.65rem;
+}
+
 .video-timeline {
   position: relative;
-  flex: 1;
-  min-width: 120px;
-  height: 1.35rem;
+  width: 100%;
+  min-width: 0;
+  height: 1.6rem;
   display: flex;
   align-items: center;
   overflow: visible;
 }
 
+.timeline-track {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 0.35rem;
+  display: flex;
+  border-radius: 4px;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.timeline-zone {
+  height: 100%;
+  flex-shrink: 0;
+}
+
+.timeline-zone-disabled {
+  background: #4a5568;
+  opacity: 0.55;
+}
+
+.timeline-zone-active {
+  background: var(--accent);
+  opacity: 0.95;
+}
+
 .video-seek {
+  position: relative;
+  z-index: 2;
   width: 100%;
   margin: 0;
   height: 0.35rem;
   -webkit-appearance: none;
   appearance: none;
-  background: #3a4f6a;
+  background: transparent;
   border-radius: 4px;
   cursor: pointer;
+}
+
+.video-seek:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .video-seek::-webkit-slider-thumb {
@@ -1116,9 +1175,13 @@ body.page-home {
   letter-spacing: 0.06em;
 }
 
+#events-list li {
+  border-left-width: 4px;
+  border-left-style: solid;
+}
+
 #events-list .event-item.event-other {
-  opacity: 0.85;
-  font-style: italic;
+  opacity: 0.92;
 }
 
 .ctrl-btn {
@@ -1240,6 +1303,7 @@ body.page-home {
   align-items: center;
   justify-content: space-between;
   padding: 1rem 1.5rem;
+  flex-shrink: 0;
 }
 
 .reviewer-bar h1 {
@@ -1260,7 +1324,9 @@ body.page-home {
   display: grid;
   grid-template-columns: 280px 1fr 260px;
   gap: 0;
-  min-height: calc(100vh - 64px);
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .video-list-panel {
@@ -1268,6 +1334,7 @@ body.page-home {
   border-right: 1px solid #2a3a52;
   padding: 1rem;
   overflow-y: auto;
+  min-height: 0;
 }
 
 .video-list-panel h2 {
@@ -1307,12 +1374,16 @@ body.page-home {
 
 .reviewer-main {
   padding: 1rem 1.5rem;
-  overflow-y: auto;
+  overflow: hidden;
   min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .reviewer-meta {
-  margin: 0.75rem 0;
+  margin: 0.75rem 0 0;
+  flex-shrink: 0;
   font-size: 0.85rem;
   color: var(--muted);
   word-break: break-all;

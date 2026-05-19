@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="Board — browse saved soccer video annotations." />
+  <title>Board — Soccer Video Annotator</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="page-board" data-page="board">
+  <div id="app-boot" class="app-boot" aria-live="polite">
+    <div class="app-boot-card">
+      <div class="app-boot-spinner" aria-hidden="true"></div>
+      <p class="app-boot-text">Loading…</p>
+    </div>
+  </div>
+
+  <div id="reviewer-screen" class="screen active">
+    <header class="top-bar reviewer-bar">
+      <h1>Board</h1>
+      <div class="reviewer-actions">
+        <a href="/" class="small-btn nav-link">Home</a>
+        <a href="/annotator" class="small-btn nav-link">Annotator</a>
+        <a href="/practice" class="small-btn nav-link">Practice</a>
+        <button type="button" id="btn-refresh-videos" class="small-btn">Refresh</button>
+        <button type="button" id="btn-logout" class="small-btn" data-action="logout">Log out</button>
+      </div>
+    </header>
+    <div class="reviewer-layout">
+      <aside class="video-list-panel">
+        <h2>Saved videos</h2>
+        <ul id="video-list"></ul>
+      </aside>
+      <section class="reviewer-main">
+        <video id="reviewer-video" controls playsinline></video>
+        <div id="reviewer-meta" class="reviewer-meta"></div>
+      </section>
+      <aside class="reviewer-events-sidebar">
+        <h2>Annotations</h2>
+        <ul id="reviewer-events"></ul>
+      </aside>
+    </div>
+  </div>
+
+  <video id="annotator-video" class="sr-only" playsinline></video>
+
+  <script src="/app.js"></script>
+</body>
+</html>

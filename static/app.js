@@ -2,9 +2,9 @@ const DEFAULT_FPS = 25;
 const API_RESPONSE_SEC = 22;
 const VIDEO_POLL_INTERVAL_MS = 2000;
 const PAGE = document.body.dataset.page || "";
-const IS_TRAIN_PAGE = PAGE === "train";
+const IS_PRACTICE_PAGE = PAGE === "practice" || PAGE === "train";
 const IS_ANNOTATOR_PAGE = PAGE === "annotator";
-const IS_REVIEW_PAGE = PAGE === "review";
+const IS_BOARD_PAGE = PAGE === "board" || PAGE === "review";
 const PENDING_ANNOTATE_KEY = "pendingAnnotateJob";
 
 let wsAuthed = false;
@@ -12,6 +12,7 @@ let wsConnectResolve = null;
 let wsConnectingPromise = null;
 
 let LABELS = [];
+let labelKeyboardRows = DEFAULT_LABEL_KEYBOARD_ROWS;
 let keyToLabel = {};
 
 const roleScreen = document.getElementById("role-screen");
@@ -41,7 +42,25 @@ const videoReady = document.getElementById("video-ready");
 const videoSeek = document.getElementById("video-seek");
 const timelineMarkers = document.getElementById("timeline-markers");
 const videoTimeline = document.getElementById("video-timeline");
+const timelineZoneBefore = document.getElementById("timeline-zone-before");
+const timelineZoneActive = document.getElementById("timeline-zone-active");
+const timelineZoneAfter = document.getElementById("timeline-zone-after");
 let timelineTooltip = null;
+
+const DEFAULT_LABEL_KEYBOARD_ROWS = [
+  ["pass", "pass_received", "take_on", "recovery", "tackle"],
+  ["aerial_duel", "save", "shot", "foul", "goal"],
+  ["interception", "substitution", "clearance", "block", "ball_out_of_play"],
+];
+
+const PARTICIPANT_COLORS = [
+  "#3d8bfd",
+  "#3ecf8e",
+  "#f59e0b",
+  "#ec4899",
+  "#a78bfa",
+  "#22d3ee",
+];
 
 const LABEL_COLORS = {
   pass: "#2563eb",
@@ -72,7 +91,14 @@ let myParticipantId = null;
 let jobPlaybackStart = 0;
 let jobTimeOrigin = 0;
 let jobPlaybackEnd = null;
+let jobCoreGlobalStart = 0;
+let jobCoreGlobalEnd = 10;
+let jobPlayGlobalStart = 0;
+let jobPlayGlobalEnd = 10;
 let jobWindowSec = 30;
+let arrowHoldTimer = null;
+let arrowHoldDelay = null;
+let arrowHoldDir = 0;
 let seekSyncing = false;
 let nextEventId = 0;
 let overlayTimer = null;
@@ -96,7 +122,33 @@ async function loadLabelConfig() {
   if (!res.ok) throw new Error("Failed to load labels");
   const data = await res.json();
   LABELS = data.labels || [];
+  labelKeyboardRows = data.keyboard_rows || DEFAULT_LABEL_KEYBOARD_ROWS;
   keyToLabel = Object.fromEntries(LABELS.map((l) => [l.key, l.id]));
+}
+
+function participantColor(participantId) {
+  const idx = Math.max(0, (participantId || 1) - 1);
+  return PARTICIPANT_COLORS[idx % PARTICIPANT_COLORS.length];
+}
+
+function computeSegmentBounds(index, total, windowSec = 30) {
+  const slice = windowSec / Math.max(total, 1);
+  const coreStart = slice * (index - 1);
+  const coreEnd = coreStart + slice;
+  const playStart = Math.max(0, coreStart - 1);
+  const playEnd = Math.min(windowSec, coreEnd + 1);
+  return { coreStart, coreEnd, playStart, playEnd };
+}
+
+function updateTimelineZones() {
+  if (!timelineZoneBefore || !timelineZoneActive || !timelineZoneAfter) return;
+  const windowSec = jobWindowSec || 30;
+  const beforePct = (jobCoreGlobalStart / windowSec) * 100;
+  const activePct = ((jobCoreGlobalEnd - jobCoreGlobalStart) / windowSec) * 100;
+  const afterPct = 100 - beforePct - activePct;
+  timelineZoneBefore.style.width = `${Math.max(0, beforePct)}%`;
+  timelineZoneActive.style.width = `${Math.max(0, activePct)}%`;
+  timelineZoneAfter.style.width = `${Math.max(0, afterPct)}%`;
 }
 
 function setStatusMessage(text, target = roleStatus) {
@@ -147,7 +199,7 @@ function showScreen(screen) {
   document.body.classList.toggle("no-scroll", isAnnotatorView(screen));
   if (!isAnnotatorView(screen)) {
     stopApiCountdown(true);
-    if (IS_TRAIN_PAGE) stopTestNextCountdown(true);
+    if (IS_PRACTICE_PAGE) stopTestNextCountdown(true);
   }
 }
 
@@ -254,7 +306,7 @@ function stopTestNextCountdown(hide = false) {
 }
 
 function startTestNextCountdown(nextRoundAtSec) {
-  if (!IS_TRAIN_PAGE || !testNextCountdown || !testNextValue) return;
+  if (!IS_PRACTICE_PAGE || !testNextCountdown || !testNextValue) return;
   stopTestNextCountdown();
   testNextCountdown.classList.remove("hidden");
   testNextCountdown.classList.add("active");
@@ -277,7 +329,7 @@ function startTestNextCountdown(nextRoundAtSec) {
 function startApiCountdownSecondsLeft(secondsLeft) {
   if (!apiCountdown || !countdownValue) return;
   stopApiCountdown();
-  if (IS_TRAIN_PAGE) stopTestNextCountdown(true);
+  if (IS_PRACTICE_PAGE) stopTestNextCountdown(true);
   apiCountdown.classList.remove("hidden", "done");
   apiCountdown.classList.add("active");
   const totalSec = Math.max(0, Number(secondsLeft) || 0);
@@ -296,7 +348,7 @@ function startApiCountdownSecondsLeft(secondsLeft) {
       apiCountdown.classList.remove("urgent", "critical", "active");
       apiCountdown.classList.add("done");
       countdownRafId = null;
-      if (IS_TRAIN_PAGE) {
+      if (IS_PRACTICE_PAGE) {
         currentJobId = null;
         loadedVideoJobId = null;
         if (nextTestRoundAtSec) startTestNextCountdown(nextTestRoundAtSec);
@@ -375,7 +427,7 @@ function jobSecondsLeft(data) {
 }
 
 function goToAnnotatorForJob(data) {
-  if (IS_TRAIN_PAGE) {
+  if (IS_PRACTICE_PAGE) {
     redirectToAnnotatorForApiJob(data);
     return;
   }
@@ -427,17 +479,30 @@ function applyJobTiming(data) {
   const index = data.annotator_index ?? 1;
   const total = data.annotator_total ?? 1;
   const windowSec = data.segment_window_sec ?? 30;
-  const slice = windowSec / total;
-  const globalStart =
-    data.time_origin_sec ?? data.start_offset_sec ?? slice * (index - 1);
+  const bounds = computeSegmentBounds(index, total, windowSec);
+  jobCoreGlobalStart = data.segment_core_start_sec ?? bounds.coreStart;
+  jobCoreGlobalEnd = data.segment_core_end_sec ?? bounds.coreEnd;
+  jobPlayGlobalStart = bounds.playStart;
+  jobPlayGlobalEnd = bounds.playEnd;
+  if (data.time_origin_sec != null) {
+    jobPlayGlobalStart = data.time_origin_sec;
+    if (data.segment_end_sec != null) {
+      jobPlayGlobalEnd = data.time_origin_sec + data.segment_end_sec;
+    }
+  } else if (data.segment_core_start_sec != null) {
+    jobPlayGlobalStart = Math.max(0, jobCoreGlobalStart - 1);
+    jobPlayGlobalEnd = Math.min(windowSec, jobCoreGlobalEnd + 1);
+  }
   const playbackStart =
-    data.start_offset_sec ?? (index === 1 ? globalStart : 0);
+    data.start_offset_sec ?? (index === 1 ? jobPlayGlobalStart : 0);
   const playbackEnd =
-    data.segment_end_sec ?? (index === 1 ? globalStart + slice : slice);
+    data.segment_end_sec ??
+    (index === 1 ? jobPlayGlobalEnd : jobPlayGlobalEnd - jobPlayGlobalStart);
   jobPlaybackStart = playbackStart;
-  jobTimeOrigin = globalStart;
+  jobTimeOrigin = data.time_origin_sec ?? jobPlayGlobalStart;
   jobPlaybackEnd = playbackEnd;
   jobWindowSec = windowSec;
+  updateTimelineZones();
 }
 
 function stripVideoUrlHash(url) {
@@ -579,26 +644,38 @@ function updatePlayPauseButton() {
   btnPlayPause.setAttribute("aria-label", video.paused ? "Play" : "Pause");
 }
 
+function globalTimeFromVideo() {
+  return (video.currentTime || 0) + (jobTimeOrigin || 0);
+}
+
+function localTimeFromGlobal(globalT) {
+  return globalT - (jobTimeOrigin || 0);
+}
+
 function updateVideoHud() {
   if (!video.src) return;
-  const localT = video.currentTime || 0;
-  const globalT = localT + (jobTimeOrigin || 0);
+  const globalT = globalTimeFromVideo();
   const frame = timeToFrame(globalT);
   if (videoTimeDisplay) videoTimeDisplay.textContent = formatTime(globalT);
   if (videoFrameDisplay) videoFrameDisplay.textContent = `frame ${frame}`;
-  if (videoSeek && video.duration && Number.isFinite(video.duration)) {
+  if (videoSeek) {
     seekSyncing = true;
-    videoSeek.value = String(localT);
+    videoSeek.min = "0";
+    videoSeek.max = String(jobWindowSec || 30);
+    videoSeek.value = String(
+      Math.min(jobWindowSec || 30, Math.max(0, globalT))
+    );
     seekSyncing = false;
   }
   updatePlayPauseButton();
 }
 
 function updateTimelineSeekRange() {
-  if (!videoSeek || !video.duration || !Number.isFinite(video.duration)) return;
+  if (!videoSeek) return;
   videoSeek.min = "0";
-  videoSeek.max = String(video.duration);
+  videoSeek.max = String(jobWindowSec || 30);
   videoSeek.step = "0.01";
+  updateTimelineZones();
 }
 
 function ensureTimelineTooltip() {
@@ -645,18 +722,17 @@ function hideTimelineMarkerTooltip() {
 
 function renderTimelineMarkers() {
   if (!timelineMarkers) return;
-  const duration = video.duration;
-  if (!duration || !Number.isFinite(duration) || duration <= 0) {
+  if (!video.src) {
     timelineMarkers.innerHTML = "";
     hideTimelineMarkerTooltip();
     return;
   }
+  const windowSec = jobWindowSec || 30;
   timelineMarkers.innerHTML = jobEvents
     .slice()
     .sort((a, b) => a.time_sec - b.time_sec)
     .map((e) => {
-      const localTime = e.time_sec - (jobTimeOrigin || 0);
-      const pct = Math.min(100, Math.max(0, (localTime / duration) * 100));
+      const pct = Math.min(100, Math.max(0, (e.time_sec / windowSec) * 100));
       const color = LABEL_COLORS[e.label] || "#94a3b8";
       const mine = e.participant_id === myParticipantId;
       const labelName = labelDisplayName(e.label);
@@ -688,13 +764,15 @@ function handleJobEvent(data) {
   renderTimelineMarkers();
 }
 
+function playbackLocalBounds() {
+  const start = localTimeFromGlobal(jobPlayGlobalStart);
+  const end = localTimeFromGlobal(jobPlayGlobalEnd);
+  return { start, end };
+}
+
 function clampPlaybackToSegment() {
   if (video.paused) return;
-  const start = jobPlaybackStart || 0;
-  const end =
-    jobPlaybackEnd != null && Number.isFinite(jobPlaybackEnd)
-      ? jobPlaybackEnd
-      : video.duration;
+  const { start, end } = playbackLocalBounds();
   if (video.currentTime < start - 0.05) {
     video.currentTime = start;
   }
@@ -702,6 +780,40 @@ function clampPlaybackToSegment() {
     video.pause();
     video.currentTime = end;
   }
+}
+
+function stepFrame(delta) {
+  if (!video.src) return;
+  const frameTime = 1 / videoFps;
+  const { start, end } = playbackLocalBounds();
+  video.pause();
+  video.currentTime = Math.min(
+    end,
+    Math.max(start, video.currentTime + delta * frameTime)
+  );
+  updateVideoHud();
+}
+
+function startArrowHold(dir) {
+  stopArrowHold();
+  stepFrame(dir);
+  arrowHoldDir = dir;
+  arrowHoldDelay = setTimeout(() => {
+    arrowHoldDelay = null;
+    arrowHoldTimer = setInterval(() => stepFrame(dir), 70);
+  }, 200);
+}
+
+function stopArrowHold() {
+  if (arrowHoldDelay) {
+    clearTimeout(arrowHoldDelay);
+    arrowHoldDelay = null;
+  }
+  if (arrowHoldTimer) {
+    clearInterval(arrowHoldTimer);
+    arrowHoldTimer = null;
+  }
+  arrowHoldDir = 0;
 }
 
 function startVideoHudLoop() {
@@ -738,15 +850,20 @@ function formatLabelKey(key) {
 function buildLabelButtons() {
   if (!labelButtons) return;
   labelButtons.innerHTML = "";
-  LABELS.forEach((label) => {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "label-btn";
-    btn.dataset.label = label.id;
-    btn.textContent = `${label.display.toUpperCase()} (${formatLabelKey(label.key)})`;
-    btn.title = `${label.display} — ${label.id}`;
-    btn.addEventListener("click", () => annotate(label.id));
-    labelButtons.appendChild(btn);
+  const labelById = Object.fromEntries(LABELS.map((l) => [l.id, l]));
+  labelKeyboardRows.forEach((row, rowIndex) => {
+    row.forEach((labelId) => {
+      const label = labelById[labelId];
+      if (!label) return;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = `label-btn kb-row-${rowIndex}`;
+      btn.dataset.label = label.id;
+      btn.textContent = `${label.display.toUpperCase()} (${formatLabelKey(label.key)})`;
+      btn.title = `${label.display} — ${label.id}`;
+      btn.addEventListener("click", () => annotate(label.id));
+      labelButtons.appendChild(btn);
+    });
   });
 }
 
@@ -769,10 +886,12 @@ function renderSessionEvents() {
       const labelName = labelDisplayName(e.label);
       const mine = e.participant_id === myParticipantId;
       const who = mine ? "you" : `#${e.participant_id}`;
+      const color = participantColor(e.participant_id);
+      const style = `border-left: 4px solid ${color}`;
       if (mine) {
-        return `<li><button type="button" class="event-item" data-event-id="${e.id}" title="Click to remove">frame ${e.frame} · ${e.time_sec.toFixed(2)}s — ${labelName} (${who})</button></li>`;
+        return `<li style="${style}"><button type="button" class="event-item" data-event-id="${e.id}" title="Click to remove">frame ${e.frame} · ${e.time_sec.toFixed(2)}s — ${labelName} (${who})</button></li>`;
       }
-      return `<li><span class="event-item event-other">frame ${e.frame} · ${e.time_sec.toFixed(2)}s — ${labelName} (${who})</span></li>`;
+      return `<li style="${style}"><span class="event-item event-other">frame ${e.frame} · ${e.time_sec.toFixed(2)}s — ${labelName} (${who})</span></li>`;
     })
     .join("");
 }
@@ -915,7 +1034,7 @@ async function startAnnotatorJob(data) {
 
   const index = data.annotator_index ?? 1;
   const total = data.annotator_total ?? 1;
-  const prefix = IS_TRAIN_PAGE ? "Test round" : "Job active";
+  const prefix = IS_PRACTICE_PAGE ? "Practice round" : "Job active";
   if (jobInfo) {
     jobInfo.textContent = `${prefix} · waiting for video ${videoId}… · ${index}/${total}`;
   }
@@ -938,6 +1057,7 @@ async function startAnnotatorJob(data) {
     const offset = jobPlaybackStart || 0;
     await waitForVideoAtOffset(offset);
     updateTimelineSeekRange();
+    updateTimelineZones();
     estimateFps();
     try {
       video.currentTime = offset;
@@ -995,7 +1115,7 @@ function handleMessage(data) {
       if (data.role === "test") {
         sessionInfo.textContent = `Practice test · annotator #${data.annotator_index} of ${data.annotator_total} · offset ${Number(data.start_offset_sec ?? 0).toFixed(2)}s`;
         if (!pendingTestJob) {
-          jobInfo.textContent = "Next test loads automatically every 30 seconds…";
+          jobInfo.textContent = "Next practice round loads automatically twice per minute…";
         }
         buildLabelButtons();
         if (!pendingTestJob) {
@@ -1049,10 +1169,10 @@ function handleMessage(data) {
       handleJobEvent(data);
       break;
     case "test_start":
-      if (IS_TRAIN_PAGE) handleTestStart(data);
+      if (IS_PRACTICE_PAGE) handleTestStart(data);
       break;
     case "test_schedule":
-      if (IS_TRAIN_PAGE) handleTestSchedule(data);
+      if (IS_PRACTICE_PAGE) handleTestSchedule(data);
       break;
     case "videos_list":
       renderVideoList(data.videos);
@@ -1097,7 +1217,6 @@ document.addEventListener(
   "keydown",
   (e) => {
     if (!isAnnotatingRole()) return;
-    if (e.target.matches("input, textarea, select")) return;
 
     if (e.code === "Space") {
       e.preventDefault();
@@ -1105,11 +1224,36 @@ document.addEventListener(
       return;
     }
 
+    if (e.code === "ArrowLeft") {
+      e.preventDefault();
+      if (!e.repeat) startArrowHold(-1);
+      return;
+    }
+
+    if (e.code === "ArrowRight") {
+      e.preventDefault();
+      if (!e.repeat) startArrowHold(1);
+      return;
+    }
+
+    if (e.target.matches("input, textarea, select")) return;
+
     const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
     const labelId = keyToLabel[key];
     if (labelId) {
       e.preventDefault();
       annotate(labelId);
+    }
+  },
+  true
+);
+
+document.addEventListener(
+  "keyup",
+  (e) => {
+    if (!isAnnotatingRole()) return;
+    if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
+      stopArrowHold();
     }
   },
   true
@@ -1180,7 +1324,7 @@ async function bootApp() {
     btn.addEventListener("click", logout);
   });
 
-  if (IS_TRAIN_PAGE) {
+  if (IS_PRACTICE_PAGE) {
     document.body.classList.add("no-scroll");
     buildLabelButtons();
     showScreen(annotatorScreen);
@@ -1206,8 +1350,9 @@ async function bootApp() {
     return;
   }
 
-  if (IS_REVIEW_PAGE) {
+  if (IS_BOARD_PAGE) {
     bindReviewHandlers();
+    document.body.classList.add("no-scroll");
     showScreen(reviewerScreen);
     await enterRole("reviewer");
     return;
@@ -1232,22 +1377,21 @@ bootApp();
 btnPlayPause?.addEventListener("click", togglePlayPause);
 
 videoSeek?.addEventListener("input", () => {
-  if (seekSyncing || !video.duration) return;
-  const t = parseFloat(videoSeek.value);
-  const start = jobPlaybackStart || 0;
-  const end =
-    jobPlaybackEnd != null && Number.isFinite(jobPlaybackEnd)
-      ? jobPlaybackEnd
-      : video.duration;
-  video.currentTime = Math.min(end, Math.max(start, t));
+  if (seekSyncing) return;
+  const globalT = parseFloat(videoSeek.value);
+  const clamped = Math.min(
+    jobPlayGlobalEnd,
+    Math.max(jobPlayGlobalStart, globalT)
+  );
+  video.currentTime = localTimeFromGlobal(clamped);
   updateVideoHud();
 });
 
 timelineMarkers?.addEventListener("click", (e) => {
   const btn = e.target.closest(".timeline-marker");
-  if (!btn || !video.duration) return;
+  if (!btn) return;
   const globalTime = parseFloat(btn.dataset.time);
-  video.currentTime = globalTime - (jobTimeOrigin || 0);
+  video.currentTime = localTimeFromGlobal(globalTime);
   updateVideoHud();
 });
 
@@ -1321,7 +1465,11 @@ async function loadReviewerVideo(item, btn) {
           e.frame !== undefined
             ? e.frame
             : timeToFrame(e.time_sec);
-        return `<li><button type="button" data-time="${e.time_sec}">frame ${frame} · ${e.time_sec.toFixed(2)}s — ${labelDisplayName(e.label)}</button></li>`;
+        const pid = e.participant_id ?? 1;
+        const color = participantColor(pid);
+        const who =
+          pid === myParticipantId ? "you" : `#${pid}`;
+        return `<li style="border-left: 4px solid ${color}"><button type="button" data-time="${e.time_sec}">frame ${frame} · ${e.time_sec.toFixed(2)}s — ${labelDisplayName(e.label)} (${who})</button></li>`;
       })
       .join("");
     reviewerEvents.querySelectorAll("button").forEach((b) => {

@@ -8,7 +8,7 @@ API and web UI for crowd-sourced soccer event annotation on short video clips.
 - **Server-hosted video** — video id is the original file name (e.g. `b56717cd…` from `…/b56717cd….mp4`); files live in `data/videos/{id}.mp4`; public playback at `GET /api/video/{id}` (no auth); clients poll every 2s until the file is ready
 - **Multi-annotator sync** — each user plays their slice of a 30s window from the same cached file
 - **Cached responses** — repeat requests for the same URL wait 10–15s, then return stored JSON
-- **Web UI** — homepage, annotator (`/annotator`), review (`/review`), or train (`/train`)
+- **Web UI** — homepage, annotator (`/annotator`), board (`/board`), or practice (`/practice`)
 
 ## Setup
 
@@ -50,8 +50,10 @@ python -c "import hashlib; print(hashlib.sha256(b'your-password').hexdigest())"
 | `/` | Homepage (requires login) |
 | `/login` | Login page |
 | `/annotator` | Annotator workspace |
-| `/review` | Review saved annotations |
-| `/train` | Training / practice rounds |
+| `/board` | Browse saved annotations |
+| `/practice` | Practice rounds (twice per minute, random video) |
+| `/review` | Redirects to `/board` |
+| `/train` | Redirects to `/practice` |
 | `/ws` | WebSocket (requires session cookie) |
 | `/api/health` | Health check (no auth) |
 | `/api/annotate` | Annotation API (`X-API-Key`) |
@@ -81,21 +83,21 @@ curl http://localhost:8080/api/health
 
 | Key | Label |
 |-----|-------|
-| P | pass |
-| [ | pass_received |
+| Q | pass |
+| W | pass_received |
+| E | take_on |
 | R | recovery |
 | T | tackle |
-| I | interception |
-| O | ball_out_of_play |
-| C | clearance |
-| Y | take_on |
-| X | substitution |
-| B | block |
 | A | aerial_duel |
-| S | shot |
-| V | save |
+| S | save |
+| D | shot |
 | F | foul |
 | G | goal |
+| Z | interception |
+| X | substitution |
+| C | clearance |
+| V | block |
+| B | ball_out_of_play |
 
 ## Data layout
 
