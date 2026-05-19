@@ -112,8 +112,10 @@ def public_video_path(video_id: str) -> str:
     return f"/api/video/{video_id}"
 
 
-def seconds_left_until(deadline_at: float) -> int:
-    return max(0, int(math.ceil(deadline_at - time.time())))
+def api_seconds_left(deadline_at: float) -> int:
+    """Seconds until the annotate API returns; always capped at ANNOTATE_DURATION_SEC."""
+    remaining = deadline_at - time.time()
+    return max(0, min(ANNOTATE_DURATION_SEC, int(math.ceil(remaining))))
 
 
 def _remove_annotation_event(
@@ -342,7 +344,7 @@ class ConnectionManager:
             "clip_duration_sec": segment_duration_sec(rank, x),
             "segment_window_sec": SEGMENT_WINDOW_SEC,
             "duration_sec": ANNOTATE_DURATION_SEC,
-            "seconds_left": seconds_left_until(job.deadline_at),
+            "seconds_left": api_seconds_left(job.deadline_at),
         }
 
     async def broadcast_annotate_job(self, job: ActiveJob) -> None:
@@ -398,7 +400,7 @@ class ConnectionManager:
             "job_id": state.job_id,
             "video_id": state.video_id,
             "duration_sec": ANNOTATE_DURATION_SEC,
-            "seconds_left": seconds_left_until(deadline_at),
+            "seconds_left": api_seconds_left(deadline_at),
             "video_file": public_video_path(state.video_id),
             "source_url": state.video_url,
             "annotator_id": session.annotator_id,

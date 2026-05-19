@@ -310,18 +310,21 @@ function redirectToAnnotatorForApiJob(data) {
   window.location.href = "/app";
 }
 
-function beginJobCountdown(data) {
-  if (data.seconds_left != null) {
-    startApiCountdownSecondsLeft(data.seconds_left);
-  } else if (data.duration_sec) {
-    startApiCountdown(data.duration_sec);
+function normalizeApiSecondsLeft(data) {
+  const raw = data.seconds_left ?? data.duration_sec;
+  const n = Number(raw);
+  if (Number.isFinite(n) && n > 0 && n <= API_RESPONSE_SEC + 1) {
+    return Math.ceil(n);
   }
+  return API_RESPONSE_SEC;
+}
+
+function beginJobCountdown(data) {
+  startApiCountdownSecondsLeft(normalizeApiSecondsLeft(data));
 }
 
 function jobSecondsLeft(data) {
-  if (data.seconds_left != null) return Number(data.seconds_left);
-  if (data.duration_sec != null) return Number(data.duration_sec);
-  return API_RESPONSE_SEC;
+  return normalizeApiSecondsLeft(data);
 }
 
 function goToAnnotatorForJob(data) {
