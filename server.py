@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 import random
 import re
@@ -109,6 +110,10 @@ def safe_video_id(video_id: str) -> bool:
 
 def public_video_path(video_id: str) -> str:
     return f"/api/video/{video_id}"
+
+
+def seconds_left_until(deadline_at: float) -> int:
+    return max(0, int(math.ceil(deadline_at - time.time())))
 
 
 def _remove_annotation_event(
@@ -337,7 +342,7 @@ class ConnectionManager:
             "clip_duration_sec": segment_duration_sec(rank, x),
             "segment_window_sec": SEGMENT_WINDOW_SEC,
             "duration_sec": ANNOTATE_DURATION_SEC,
-            "deadline_at": job.deadline_at,
+            "seconds_left": seconds_left_until(job.deadline_at),
         }
 
     async def broadcast_annotate_job(self, job: ActiveJob) -> None:
@@ -393,7 +398,7 @@ class ConnectionManager:
             "job_id": state.job_id,
             "video_id": state.video_id,
             "duration_sec": ANNOTATE_DURATION_SEC,
-            "deadline_at": deadline_at,
+            "seconds_left": seconds_left_until(deadline_at),
             "video_file": public_video_path(state.video_id),
             "source_url": state.video_url,
             "annotator_id": session.annotator_id,

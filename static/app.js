@@ -227,16 +227,17 @@ function startTestNextCountdown(nextRoundAtSec) {
   testNextRafId = requestAnimationFrame(tick);
 }
 
-function startApiCountdownFromDeadline(deadlineAtSec) {
+function startApiCountdownSecondsLeft(secondsLeft) {
   if (!apiCountdown || !countdownValue) return;
   stopApiCountdown();
   if (IS_TEST_PAGE) stopTestNextCountdown(true);
   apiCountdown.classList.remove("hidden", "done");
   apiCountdown.classList.add("active");
-  countdownDeadline = null;
+  const totalSec = Math.max(0, Number(secondsLeft) || 0);
+  countdownDeadline = performance.now() + totalSec * 1000;
 
   const tick = () => {
-    const leftMs = deadlineAtSec * 1000 - Date.now();
+    const leftMs = countdownDeadline - performance.now();
     const leftSec = Math.max(0, leftMs / 1000);
     const display = Math.ceil(leftSec);
     countdownValue.textContent = String(display);
@@ -261,7 +262,7 @@ function startApiCountdownFromDeadline(deadlineAtSec) {
 }
 
 function startApiCountdown(durationSec = API_RESPONSE_SEC) {
-  startApiCountdownFromDeadline(Date.now() / 1000 + durationSec);
+  startApiCountdownSecondsLeft(durationSec);
 }
 
 function showRoleModal() {
@@ -310,11 +311,17 @@ function redirectToAnnotatorForApiJob(data) {
 }
 
 function beginJobCountdown(data) {
-  if (data.deadline_at) {
-    startApiCountdownFromDeadline(data.deadline_at);
+  if (data.seconds_left != null) {
+    startApiCountdownSecondsLeft(data.seconds_left);
   } else if (data.duration_sec) {
     startApiCountdown(data.duration_sec);
   }
+}
+
+function jobSecondsLeft(data) {
+  if (data.seconds_left != null) return Number(data.seconds_left);
+  if (data.duration_sec != null) return Number(data.duration_sec);
+  return API_RESPONSE_SEC;
 }
 
 function goToAnnotatorForJob(data) {
@@ -385,30 +392,31 @@ function stopVideoPoll() {
   }
 }
 
-function waitForServerVideo(videoId) {
+async function waitForServerVideo(videoId, secondsLeft) {
   stopVideoPoll();
-
+  const abort = { aborted: false };
+  videoPollAbort = abort;
   const path = serverVideoApiPath(videoId);
+  const deadlineMs = performance.now() + Math.max(0, secondsLeft) * 1000;
 
-  return new Promise((resolve) => {
-    const interval = setInterval(async () => {
-      try {
-        console.log("calling api...");
-
-        const resp = await fetch(path, {
-          method: "GET",
-          cache: "no-store",
-        });
-
-        if (resp.ok) {
-          clearInterval(interval);
-          resolve(new URL(path, location.origin).href);
-        }
-      } catch (err) {
-        console.log("api failed");
+  while (!abort.aborted && performance.now() < deadlineMs) {
+    try {
+      const resp = await fetch(path, { method: "HEAD", cache: "no-store" });
+      if (resp.ok) {
+        videoPollAbort = null;
+        return new URL(path, location.origin).href;
       }
-    }, 2000);
-  });
+    } catch (err) {
+      console.debug("video poll", videoId, err);
+    }
+    const left = deadlineMs - performance.now();
+    if (left <= 0) break;
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(VIDEO_POLL_INTERVAL_MS, left))
+    );
+  }
+  videoPollAbort = null;
+  return null;
 }
 
 function connectWebSocket() {
@@ -765,8 +773,7 @@ async function startAnnotatorJob(data) {
   const videoId = jobVideoId(data);
   if (!videoId) return;
 
-  const deadlineAt =
-    data.deadline_at ?? Date.now() / 1000 + (data.duration_sec ?? API_RESPONSE_SEC);
+  const secondsLeft = jobSecondsLeft(data);
 
   if (data.job_id === loadedVideoJobId && video.src) {
     const expected = serverVideoApiPath(videoId);
@@ -797,7 +804,7 @@ async function startAnnotatorJob(data) {
 
   showVideoReady();
   video.pause();
-  const url = await waitForServerVideo(videoId, deadlineAt);
+  const url = await waitForServerVideo(videoId, secondsLeft);
   if (!url) {
     if (jobInfo) {
       jobInfo.textContent = `Video not ready before API deadline (${videoId})`;
