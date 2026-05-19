@@ -1,4 +1,5 @@
 const DEFAULT_FPS = 25;
+const FIRST_PART_EXTRA_SEC = 2;
 const ARROW_HOLD_DELAY_MS = 60;
 const ARROW_HOLD_INTERVAL_MS = 28;
 const API_RESPONSE_SEC = 22;
@@ -131,10 +132,21 @@ function participantColor(participantId) {
   return PARTICIPANT_COLORS[idx % PARTICIPANT_COLORS.length];
 }
 
+function computeSegmentCoreBounds(index, total, windowSec = 30) {
+  const x = Math.max(total, 1);
+  const base = windowSec / x;
+  if (index === 1) {
+    return { coreStart: 0, coreEnd: Math.min(windowSec, base + FIRST_PART_EXTRA_SEC) };
+  }
+  const firstEnd = Math.min(windowSec, base + FIRST_PART_EXTRA_SEC);
+  const remaining = windowSec - firstEnd;
+  const sliceOther = remaining / (x - 1);
+  const coreStart = firstEnd + sliceOther * (index - 2);
+  return { coreStart, coreEnd: coreStart + sliceOther };
+}
+
 function computeSegmentBounds(index, total, windowSec = 30) {
-  const slice = windowSec / Math.max(total, 1);
-  const coreStart = slice * (index - 1);
-  const coreEnd = coreStart + slice;
+  const { coreStart, coreEnd } = computeSegmentCoreBounds(index, total, windowSec);
   const playStart = Math.max(0, coreStart - 1);
   const playEnd = Math.min(windowSec, coreEnd + 1);
   return { coreStart, coreEnd, playStart, playEnd };

@@ -795,8 +795,9 @@ body.page-home {
 }
 
 .label-grid {
-  --label-color-a: #2d4a7a;
-  --label-color-b: #3a3560;
+  --label-row-0: #2d4a7a;
+  --label-row-1: #355a80;
+  --label-row-2: #3d4f72;
   display: grid;
   grid-template-columns: repeat(5, 1fr);
   grid-template-rows: repeat(3, auto);
@@ -834,13 +835,16 @@ body.page-home {
   white-space: nowrap;
 }
 
-.label-btn.kb-row-0,
+.label-btn.kb-row-0 {
+  background: var(--label-row-0);
+}
+
 .label-btn.kb-row-1 {
-  background: var(--label-color-a);
+  background: var(--label-row-1);
 }
 
 .label-btn.kb-row-2 {
-  background: var(--label-color-b);
+  background: var(--label-row-2);
 }
 
 .label-btn:hover {

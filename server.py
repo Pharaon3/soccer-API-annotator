@@ -60,6 +60,7 @@ CACHE_DELAY_MIN_SEC = 10
 CACHE_DELAY_MAX_SEC = 15
 SEGMENT_WINDOW_SEC = 30
 SEGMENT_PADDING_SEC = 1.0
+FIRST_PART_EXTRA_SEC = 2.0
 PRACTICE_INTERVAL_SEC = 30
 # Segment proxy encode: 480p height, 25 fps, H.264 ultrafast
 SEGMENT_SCALE_FILTER = "scale=-2:480"
@@ -68,13 +69,25 @@ SEGMENT_CRF = 28
 SEGMENT_FFMPEG_PRESET = "ultrafast"
 
 
-def segment_start_sec(rank: int, total: int) -> float:
+def segment_core_bounds(rank: int, total: int) -> tuple[float, float]:
+    """First annotator gets +FIRST_PART_EXTRA_SEC; remaining window is split evenly."""
     x = max(total, 1)
-    return SEGMENT_WINDOW_SEC / x * (rank - 1)
+    base = SEGMENT_WINDOW_SEC / x
+    if rank == 1:
+        return 0.0, min(SEGMENT_WINDOW_SEC, base + FIRST_PART_EXTRA_SEC)
+    first_end = min(SEGMENT_WINDOW_SEC, base + FIRST_PART_EXTRA_SEC)
+    remaining = SEGMENT_WINDOW_SEC - first_end
+    slice_other = remaining / max(x - 1, 1)
+    core_start = first_end + slice_other * (rank - 2)
+    return core_start, core_start + slice_other
+
+
+def segment_start_sec(rank: int, total: int) -> float:
+    return segment_core_bounds(rank, total)[0]
 
 
 def segment_end_sec(rank: int, total: int) -> float:
-    return segment_start_sec(rank, total) + SEGMENT_WINDOW_SEC / max(total, 1)
+    return segment_core_bounds(rank, total)[1]
 
 
 def segment_duration_sec(rank: int, total: int) -> float:
