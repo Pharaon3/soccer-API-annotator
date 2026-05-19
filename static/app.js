@@ -81,6 +81,7 @@ let sessionEvents = [];
 let jobEvents = [];
 let myParticipantId = null;
 let jobStartOffset = 0;
+let jobTimeOrigin = 0;
 let jobSegmentEnd = null;
 let jobWindowSec = 30;
 let seekSyncing = false;
@@ -103,6 +104,14 @@ function wsUrl() {
 
 function timeToFrame(timeSec) {
   return Math.max(0, Math.round(timeSec * videoFps));
+}
+
+function clipToAbsolute(clipSec) {
+  return clipSec + jobTimeOrigin;
+}
+
+function absoluteToClip(absSec) {
+  return absSec - jobTimeOrigin;
 }
 
 function frameToTime(frame) {
@@ -331,14 +340,20 @@ function applyRoleAckToJob(data, ack) {
   const index = ack.annotator_index ?? data.annotator_index ?? 1;
   const windowSec = data.segment_window_sec ?? 30;
   const slice = windowSec / total;
-  const start = ack.start_offset_sec ?? data.start_offset_sec ?? 0;
+  const timeOrigin =
+    ack.time_origin_sec ??
+    data.time_origin_sec ??
+    slice * (index - 1);
   return {
     ...data,
     annotator_index: index,
     annotator_total: total,
-    start_offset_sec: start,
+    start_offset_sec: 0,
+    time_origin_sec: timeOrigin,
     segment_end_sec:
-      ack.segment_end_sec ?? data.segment_end_sec ?? start + slice,
+      ack.segment_end_sec ?? data.segment_end_sec ?? timeOrigin + slice,
+    clip_duration_sec:
+      ack.clip_duration_sec ?? data.clip_duration_sec ?? slice,
     segment_window_sec: windowSec,
   };
 }
@@ -347,59 +362,6 @@ function stripVideoUrlHash(url) {
   if (!url) return "";
   const i = url.indexOf("#");
   return i >= 0 ? url.slice(0, i) : url;
-}
-
-function formatMediaFragmentTime(sec) {
-  return String(Math.max(0, Number(sec.toFixed(3))));
-}
-
-/** Start hint only — does not cap download length; full window is buffered separately. */
-function buildVideoSrcWithStartHint(url, startSec) {
-  const base = stripVideoUrlHash(url);
-  const start = Math.max(0, startSec || 0);
-  if (start > 0) {
-    return `${base}#t=${formatMediaFragmentTime(start)}`;
-  }
-  return base;
-}
-
-function seekVideoTo(timeSec) {
-  const target = Math.max(0, timeSec);
-  if (
-    video.readyState >= HTMLMediaElement.HAVE_METADATA &&
-    Math.abs(video.currentTime - target) < 0.08
-  ) {
-    return Promise.resolve();
-  }
-  return new Promise((resolve) => {
-    const done = () => {
-      video.removeEventListener("seeked", done);
-      resolve();
-    };
-    video.addEventListener("seeked", done, { once: true });
-    video.currentTime = target;
-    setTimeout(done, 8000);
-  });
-}
-
-/**
- * Buffer the full annotation window (e.g. 30s) but fetch in priority order:
- * user 1 → from 0s first; user 2 → from 15s first, then backfill 0–15s.
- */
-async function loadVideoWithPriorityOrder(url, priorityOffset, windowSec) {
-  const hintSrc = buildVideoSrcWithStartHint(url, priorityOffset);
-  prefetchVideoUrl(hintSrc);
-  if (!sameVideoUrl(video.src, url)) {
-    video.preload = "auto";
-    video.src = hintSrc;
-    video.load();
-  }
-  await waitForVideoAtOffset(priorityOffset);
-
-  if (priorityOffset > 0 && video.readyState >= HTMLMediaElement.HAVE_METADATA) {
-    await seekVideoTo(0);
-    await seekVideoTo(priorityOffset);
-  }
 }
 
 function connectWebSocket() {
@@ -468,9 +430,8 @@ function prefetchVideoUrl(url) {
 
 function updateTimelineSeekRange() {
   if (!videoSeek || !video.duration || !Number.isFinite(video.duration)) return;
-  const max = Math.min(jobWindowSec, video.duration);
   videoSeek.min = "0";
-  videoSeek.max = String(max);
+  videoSeek.max = String(video.duration);
   videoSeek.step = "0.01";
 }
 
@@ -531,13 +492,14 @@ function renderTimelineMarkers() {
     .slice()
     .sort((a, b) => a.time_sec - b.time_sec)
     .map((e) => {
-      const pct = Math.min(100, Math.max(0, (e.time_sec / duration) * 100));
+      const clipT = absoluteToClip(e.time_sec);
+      const pct = Math.min(100, Math.max(0, (clipT / duration) * 100));
       const color = LABEL_COLORS[e.label] || "#94a3b8";
       const mine = e.participant_id === myParticipantId;
       const labelName =
         LABELS.find((l) => l.id === e.label)?.display ?? e.label;
       const who = mine ? "You" : `Annotator #${e.participant_id}`;
-      return `<button type="button" class="timeline-marker${mine ? " mine" : ""}" data-time="${e.time_sec}" data-frame="${e.frame}" data-label="${e.label}" data-label-name="${labelName}" data-who="${who}" data-event-id="${e.id ?? ""}" style="left:${pct}%;background:${color}" aria-label="${labelName}, frame ${e.frame}"></button>`;
+      return `<button type="button" class="timeline-marker${mine ? " mine" : ""}" data-time="${clipT}" data-frame="${e.frame}" data-label="${e.label}" data-label-name="${labelName}" data-who="${who}" data-event-id="${e.id ?? ""}" style="left:${pct}%;background:${color}" aria-label="${labelName}, frame ${e.frame}"></button>`;
     })
     .join("");
 }
@@ -565,14 +527,10 @@ function handleJobEvent(data) {
 }
 
 function clampPlaybackToSegment() {
-  if (video.paused) return;
-  const end = Math.min(
-    jobWindowSec,
-    Number.isFinite(video.duration) ? video.duration : jobWindowSec
-  );
-  if (video.currentTime >= end - 0.05) {
+  if (video.paused || !Number.isFinite(video.duration)) return;
+  if (video.currentTime >= video.duration - 0.05) {
     video.pause();
-    video.currentTime = end;
+    video.currentTime = video.duration;
   }
 }
 
@@ -673,7 +631,7 @@ function removeSessionEvent(eventId) {
 
 function annotate(labelId) {
   if (!currentJobId || !video.src) return;
-  const time_sec = video.currentTime;
+  const time_sec = clipToAbsolute(video.currentTime);
   const frame = timeToFrame(time_sec);
   showOverlay(labelId, frame);
   send({
@@ -740,7 +698,7 @@ function waitForVideoAtOffset(offset) {
 }
 
 async function startAnnotatorJob(data) {
-  const url = data.original_url || data.video_url;
+  const url = data.video_url;
   if (!url) return;
 
   if (data.job_id === loadedVideoJobId && sameVideoUrl(video.src, url)) {
@@ -752,9 +710,14 @@ async function startAnnotatorJob(data) {
   jobEvents = [];
   sessionEvents = [];
   nextEventId = 0;
-  jobStartOffset = data.start_offset_sec ?? 0;
+  jobTimeOrigin =
+    data.time_origin_sec ??
+    (data.start_offset_sec > 0 ? data.start_offset_sec : 0);
+  jobStartOffset = 0;
   jobSegmentEnd = data.segment_end_sec ?? null;
-  jobWindowSec = data.segment_window_sec ?? 30;
+  jobWindowSec =
+    data.clip_duration_sec ??
+    (jobSegmentEnd != null ? jobSegmentEnd - jobTimeOrigin : 30);
   if (data.annotator_id != null) myParticipantId = data.annotator_id;
   renderSessionEvents();
   renderTimelineMarkers();
@@ -762,30 +725,31 @@ async function startAnnotatorJob(data) {
 
   const index = data.annotator_index ?? 1;
   const total = data.annotator_total ?? 1;
-  const offset = jobStartOffset;
   const prefix = IS_TEST_PAGE ? "Test round" : "Job active";
   if (jobInfo) {
-    jobInfo.textContent = `${prefix} · start ${offset.toFixed(2)}s · ${index}/${total}`;
+    jobInfo.textContent = `${prefix} · server clip ${jobWindowSec.toFixed(1)}s (source @ ${jobTimeOrigin.toFixed(1)}s) · ${index}/${total}`;
   }
 
+  prefetchVideoUrl(url);
   showVideoReady();
   video.pause();
-  await loadVideoWithPriorityOrder(url, offset, jobWindowSec);
+  if (!sameVideoUrl(video.src, url)) {
+    video.preload = "auto";
+    video.src = url;
+    video.load();
+  }
+  await waitForVideoAtOffset(0);
   updateTimelineSeekRange();
 
   hideVideoReady();
   estimateFps();
   try {
-    if (Math.abs(video.currentTime - offset) > 0.1) {
-      video.currentTime = offset;
-    }
+    video.currentTime = 0;
     await video.play();
   } catch (err) {
     console.warn("Autoplay blocked, retrying muted", err);
     video.muted = true;
-    if (Math.abs(video.currentTime - offset) > 0.1) {
-      video.currentTime = offset;
-    }
+    video.currentTime = 0;
     await video.play();
   }
   startVideoHudLoop();

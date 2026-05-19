@@ -8,6 +8,7 @@ import json
 import logging
 import random
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +28,12 @@ from auth import (
     verify_password_plain,
     verify_session,
 )
+from video_processing import (
+    cleanup_job_dir,
+    prepare_job_video_segments,
+    segment_api_url,
+    segment_duration_sec,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -35,9 +42,10 @@ ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 VIDEOS_DIR = DATA_DIR / "videos"
 ANNOTATIONS_DIR = DATA_DIR / "annotations"
+JOBS_DIR = DATA_DIR / "jobs"
 STATIC_DIR = ROOT / "static"
 
-for d in (VIDEOS_DIR, ANNOTATIONS_DIR, STATIC_DIR):
+for d in (VIDEOS_DIR, ANNOTATIONS_DIR, JOBS_DIR, STATIC_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 LABELS = [
@@ -99,6 +107,8 @@ class ActiveJob:
     video_key: str
     local_path: Path
     started_at: float
+    job_dir: Path
+    segment_paths: dict[int, Path] = field(default_factory=dict)
     events: list[dict[str, Any]] = field(default_factory=list)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -271,29 +281,32 @@ class ConnectionManager:
         end = self.segment_end_for(annotator_index, total)
         return start, end
 
-    async def broadcast_annotate_job(
-        self, job: ActiveJob, serve_url: str
-    ) -> None:
+    async def broadcast_annotate_job(self, job: ActiveJob) -> None:
         x = max(self.annotator_count, 1)
         payload_base = {
             "type": "annotate_start",
             "job_id": job.job_id,
-            "video_url": serve_url,
-            "original_url": job.video_url,
         }
         dead: list[int] = []
         sorted_sessions = sorted(
             self.participants.values(), key=lambda s: s.annotator_id
         )
         for rank, session in enumerate(sorted_sessions, start=1):
-            start_offset, segment_end = self.segment_bounds(rank, total=x)
+            time_origin, segment_end = self.segment_bounds(rank, total=x)
+            clip_duration = segment_duration_sec(rank, x)
+            if rank not in job.segment_paths:
+                logger.warning("Missing segment job=%s rank=%s", job.job_id, rank)
+                continue
             payload = {
                 **payload_base,
+                "video_url": segment_api_url(job.job_id, rank),
                 "annotator_id": session.annotator_id,
                 "annotator_index": rank,
                 "annotator_total": x,
-                "start_offset_sec": start_offset,
+                "start_offset_sec": 0,
+                "time_origin_sec": time_origin,
                 "segment_end_sec": segment_end,
+                "clip_duration_sec": clip_duration,
                 "segment_window_sec": SEGMENT_WINDOW_SEC,
                 "duration_sec": ANNOTATE_DURATION_SEC,
             }
@@ -311,17 +324,21 @@ class ConnectionManager:
         job_id, job = max(active_jobs.items(), key=lambda item: item[1].started_at)
         x = max(self.annotator_count, 1)
         rank = self.rank_of_participant(session.annotator_id)
-        start_offset, segment_end = self.segment_bounds(rank, total=x)
+        time_origin, segment_end = self.segment_bounds(rank, total=x)
+        clip_duration = segment_duration_sec(rank, x)
+        if rank not in job.segment_paths:
+            return
         payload = {
             "type": "annotate_start",
             "job_id": job_id,
-            "video_url": job.video_url,
-            "original_url": job.video_url,
+            "video_url": segment_api_url(job_id, rank),
             "annotator_id": session.annotator_id,
             "annotator_index": rank,
             "annotator_total": x,
-            "start_offset_sec": start_offset,
+            "start_offset_sec": 0,
+            "time_origin_sec": time_origin,
             "segment_end_sec": segment_end,
+            "clip_duration_sec": clip_duration,
             "segment_window_sec": SEGMENT_WINDOW_SEC,
             "duration_sec": ANNOTATE_DURATION_SEC,
         }
@@ -339,14 +356,15 @@ class ConnectionManager:
             )
 
     async def broadcast_test_job(
-        self, job_id: str, video_key: str, video_url: str
+        self,
+        job_id: str,
+        video_key: str,
+        segment_paths: dict[int, Path],
     ) -> None:
         x = max(self.test_annotator_count, 1)
         payload_base = {
             "type": "test_start",
             "job_id": job_id,
-            "video_url": video_url,
-            "original_url": video_url,
             "video_key": video_key,
             "duration_sec": ANNOTATE_DURATION_SEC,
         }
@@ -355,13 +373,19 @@ class ConnectionManager:
             self.test_annotators.values(), key=lambda s: s.annotator_id
         )
         for rank, session in enumerate(sorted_sessions, start=1):
-            start_offset, segment_end = self.segment_bounds(rank, total=x)
+            time_origin, segment_end = self.segment_bounds(rank, total=x)
+            clip_duration = segment_duration_sec(rank, x)
+            if rank not in segment_paths:
+                continue
             payload = {
                 **payload_base,
+                "video_url": segment_api_url(job_id, rank),
                 "annotator_index": rank,
                 "annotator_total": x,
-                "start_offset_sec": start_offset,
+                "start_offset_sec": 0,
+                "time_origin_sec": time_origin,
                 "segment_end_sec": segment_end,
+                "clip_duration_sec": clip_duration,
                 "segment_window_sec": SEGMENT_WINDOW_SEC,
             }
             try:
@@ -421,6 +445,7 @@ active_jobs: dict[str, ActiveJob] = {}
 job_events: dict[str, list[dict[str, Any]]] = {}
 active_test_jobs: set[str] = set()
 test_job_events: dict[str, list[dict[str, Any]]] = {}
+test_job_segment_paths: dict[str, dict[int, Path]] = {}
 
 app = FastAPI(title="Soccer Annotator API")
 
@@ -449,12 +474,26 @@ async def run_test_round() -> None:
     job_id = f"test-{video_key}-{int(time.time() * 1000)}"
     active_test_jobs.add(job_id)
     test_job_events[job_id] = []
+    job_dir = JOBS_DIR / job_id
+    x = max(manager.test_annotator_count, 1)
+    local_video = VIDEOS_DIR / f"{video_key}.mp4"
 
-    await manager.broadcast_test_job(job_id, video_key, remote_url)
-    await asyncio.sleep(ANNOTATE_DURATION_SEC)
-
-    active_test_jobs.discard(job_id)
-    test_job_events.pop(job_id, None)
+    try:
+        segment_paths = await prepare_job_video_segments(
+            job_dir,
+            remote_url,
+            x,
+            download_video,
+            local_source=local_video if local_video.is_file() else None,
+        )
+        test_job_segment_paths[job_id] = segment_paths
+        await manager.broadcast_test_job(job_id, video_key, segment_paths)
+        await asyncio.sleep(ANNOTATE_DURATION_SEC)
+    finally:
+        active_test_jobs.discard(job_id)
+        test_job_events.pop(job_id, None)
+        test_job_segment_paths.pop(job_id, None)
+        cleanup_job_dir(job_dir)
     manager.schedule_next_test_round()
     await manager.broadcast_test_schedule()
 
@@ -532,6 +571,12 @@ async def run_annotate_job(video_url: str) -> dict[str, Any]:
     job_id = f"{key}-{int(time.time() * 1000)}"
     _, _, video_path = cache_paths(key)
     deadline = time.time() + RESPONSE_TIMEOUT_SEC
+    job_dir = JOBS_DIR / job_id
+    x = max(manager.annotator_count, 1)
+
+    segment_paths = await prepare_job_video_segments(
+        job_dir, video_url, x, download_video
+    )
 
     job = ActiveJob(
         job_id=job_id,
@@ -539,28 +584,31 @@ async def run_annotate_job(video_url: str) -> dict[str, Any]:
         video_key=key,
         local_path=video_path,
         started_at=time.time(),
+        job_dir=job_dir,
+        segment_paths=segment_paths,
     )
     active_jobs[job_id] = job
     job_events[job_id] = []
 
-    # Auto-play immediately from remote URL; download for storage in parallel.
-    await manager.broadcast_annotate_job(job, video_url)
-    download_task = asyncio.create_task(
-        _ensure_video_downloaded(video_url, video_path)
-    )
+    await manager.broadcast_annotate_job(job)
 
     remaining = deadline - time.time()
     if remaining > 0:
         await asyncio.sleep(remaining)
 
-    await download_task
-
     events = sorted(job_events.get(job_id, []), key=lambda e: e["time_sec"])
     result = {"events": events}
-    save_cached(video_url, events, video_path)
+
+    source = job_dir / "source.mp4"
+    if source.is_file() and not video_path.is_file():
+        video_path.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(shutil.copy2, source, video_path)
+    if video_path.is_file():
+        save_cached(video_url, events, video_path)
 
     active_jobs.pop(job_id, None)
     job_events.pop(job_id, None)
+    cleanup_job_dir(job_dir)
     await manager.notify_reviewers_video_saved(key)
     return result
 
@@ -676,6 +724,32 @@ async def get_video_file(video_key: str, request: Request) -> FileResponse:
     return FileResponse(path, media_type="video/mp4")
 
 
+def _resolve_job_segment(job_id: str, rank: int) -> Path | None:
+    if job_id in active_jobs:
+        path = active_jobs[job_id].segment_paths.get(rank)
+        if path and path.is_file():
+            return path
+    if job_id in test_job_segment_paths:
+        path = test_job_segment_paths[job_id].get(rank)
+        if path and path.is_file():
+            return path
+    fallback = JOBS_DIR / job_id / f"seg_{rank}.mp4"
+    if fallback.is_file():
+        return fallback
+    return None
+
+
+@app.get("/api/jobs/{job_id}/segments/{rank}.mp4")
+async def get_job_segment(job_id: str, rank: int, request: Request) -> FileResponse:
+    _require_auth(request)
+    if rank < 1:
+        raise HTTPException(status_code=400, detail="Invalid segment rank")
+    path = _resolve_job_segment(job_id, rank)
+    if not path:
+        raise HTTPException(status_code=404, detail="Segment not found")
+    return FileResponse(path, media_type="video/mp4")
+
+
 @app.get("/api/videos/{video_key}/annotations")
 async def get_annotations(video_key: str, request: Request) -> dict[str, Any]:
     _require_auth(request)
@@ -727,8 +801,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                                 "annotator_id": annotator_session.annotator_id,
                                 "annotator_index": rank,
                                 "annotator_total": x,
-                                "start_offset_sec": seg_start,
+                                "start_offset_sec": 0,
+                                "time_origin_sec": seg_start,
                                 "segment_end_sec": seg_end,
+                                "clip_duration_sec": segment_duration_sec(rank, x),
                                 "segment_window_sec": SEGMENT_WINDOW_SEC,
                             }
                         )
@@ -767,8 +843,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                                 "annotator_id": annotator_session.annotator_id,
                                 "annotator_index": rank,
                                 "annotator_total": x,
-                                "start_offset_sec": seg_start,
+                                "start_offset_sec": 0,
+                                "time_origin_sec": seg_start,
                                 "segment_end_sec": seg_end,
+                                "clip_duration_sec": segment_duration_sec(rank, x),
                                 "segment_window_sec": SEGMENT_WINDOW_SEC,
                             }
                         )
