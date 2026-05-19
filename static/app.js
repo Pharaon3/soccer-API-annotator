@@ -830,7 +830,7 @@ function handleMessage(data) {
       if (data.role === "test") {
         sessionInfo.textContent = `Practice test · annotator #${data.annotator_index} of ${data.annotator_total} · offset ${data.start_offset_sec.toFixed(2)}s`;
         if (!pendingTestJob) {
-          jobInfo.textContent = "Next test loads automatically every minute…";
+          jobInfo.textContent = "Next test loads automatically every 30 seconds…";
         }
         buildLabelButtons();
         if (!pendingTestJob) {
