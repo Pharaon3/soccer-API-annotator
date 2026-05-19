@@ -808,7 +808,7 @@ function playbackLocalBounds() {
   if (video.duration && Number.isFinite(video.duration)) {
     end = Math.min(end, video.duration);
   }
-  return { start, Math.max(start, end) };
+  return { start, end: Math.max(start, end) };
 }
 
 function clampPlaybackToSegment() {
