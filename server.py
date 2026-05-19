@@ -1008,7 +1008,7 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> Respon
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
-@app.post("/api/annotate")
+@app.post("/api/large_model_processing")
 async def annotate(
     body: AnnotateRequest,
     x_api_key: str | None = Header(None, alias="X-API-Key"),

@@ -4,7 +4,7 @@ API and web UI for crowd-sourced soccer event annotation on short video clips.
 
 ## Features
 
-- **POST `/api/annotate`** — send a public `video_url`; after 22 seconds returns merged JSON `{ "events": [{ "time_sec", "label" }, ...] }`
+- **POST `/api/large_model_processing`** — send a public `video_url`; after 22 seconds returns merged JSON `{ "events": [{ "time_sec", "label" }, ...] }`
 - **Server-hosted video** — video id is the original file name (e.g. `b56717cd…` from `…/b56717cd….mp4`); files live in `data/videos/{id}.mp4`; public playback at `GET /api/video/{id}` (no auth); clients poll every 2s until the file is ready
 - **Multi-annotator sync** — each user plays their slice of a 30s window from the same cached file
 - **Cached responses** — repeat requests for the same URL wait 10–15s, then return stored JSON
@@ -27,7 +27,7 @@ Open http://localhost:8080 and log in with your app password.
 
 | Variable | Description |
 |----------|-------------|
-| `API_KEY` | Required for `POST /api/annotate` (`X-API-Key` header) |
+| `API_KEY` | Required for `POST /api/large_model_processing` (`X-API-Key` header) |
 | `APP_PASSWORD_HASH` | SHA-256 hex of the web UI password |
 | `SESSION_SECRET` | Long random string (32+ characters) |
 | `ANNOTATOR_ENV` | Set to `production` for strict startup validation |
@@ -56,7 +56,7 @@ python -c "import hashlib; print(hashlib.sha256(b'your-password').hexdigest())"
 | `/train` | Redirects to `/practice` |
 | `/ws` | WebSocket (requires session cookie) |
 | `/api/health` | Health check (no auth) |
-| `/api/annotate` | Annotation API (`X-API-Key`) |
+| `/api/large_model_processing` | Annotation API (`X-API-Key`) |
 | `/api/auth/login` | Web login |
 | `/api/labels` | Label config (authenticated) |
 
@@ -65,7 +65,7 @@ python -c "import hashlib; print(hashlib.sha256(b'your-password').hexdigest())"
 Public video (no auth): `GET /api/video/{video-id}` — returns the `.mp4` once downloaded.
 
 ```bash
-curl -X POST http://localhost:8080/api/annotate \
+curl -X POST http://localhost:8080/api/large_model_processing \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-key-from-env" \
   -d '{"video_url": "https://example.com/video.mp4"}'

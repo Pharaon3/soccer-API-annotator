@@ -91,7 +91,7 @@ def verify_api_key(provided: str | None) -> bool:
 def validate_startup_config() -> None:
     """Log warnings for missing or insecure configuration."""
     if not API_KEY:
-        logger.warning("API_KEY is not set — POST /api/annotate will reject requests")
+        logger.warning("API_KEY is not set — POST /api/large_model_processing will reject requests")
     if not APP_PASSWORD_HASH:
         logger.warning("APP_PASSWORD_HASH is not set — web login will fail")
     if not SESSION_SECRET:
