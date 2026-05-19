@@ -387,15 +387,19 @@ function stopVideoPoll() {
 
 async function waitForServerVideo(videoId, deadlineAtSec) {
   stopVideoPoll();
+
   const abort = { aborted: false };
   videoPollAbort = abort;
-  const path = serverVideoApiPath(videoId);
-  const deadlineMs =
-    (deadlineAtSec ?? Date.now() / 1000 + API_RESPONSE_SEC) * 1000;
 
-  while (!abort.aborted && Date.now() < deadlineMs) {
+  const path = serverVideoApiPath(videoId);
+
+  while (!abort.aborted) {
     try {
-      const resp = await fetch(path, { method: "HEAD", cache: "no-store" });
+      const resp = await fetch(path, {
+        method: "GET", // or HEAD if your server supports HEAD
+        cache: "no-store",
+      });
+
       if (resp.ok) {
         videoPollAbort = null;
         return new URL(path, location.origin).href;
@@ -403,12 +407,12 @@ async function waitForServerVideo(videoId, deadlineAtSec) {
     } catch (err) {
       console.debug("video poll", videoId, err);
     }
-    const left = deadlineMs - Date.now();
-    if (left <= 0) break;
+
     await new Promise((resolve) =>
-      setTimeout(resolve, Math.min(VIDEO_POLL_INTERVAL_MS, left))
+      setTimeout(resolve, VIDEO_POLL_INTERVAL_MS)
     );
   }
+
   videoPollAbort = null;
   return null;
 }
