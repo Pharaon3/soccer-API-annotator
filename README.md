@@ -8,7 +8,7 @@ API and web UI for crowd-sourced soccer event annotation on short video clips.
 - **Server-hosted video** — video id is the original file name (e.g. `b56717cd…` from `…/b56717cd….mp4`); files live in `data/videos/{id}.mp4`; public playback at `GET /api/video/{id}` (no auth); clients poll every 2s until the file is ready
 - **Multi-annotator sync** — each user plays their slice of a 30s window from the same cached file
 - **Cached responses** — repeat requests for the same URL wait 10–15s, then return stored JSON
-- **Web UI** — annotator, practice test (`/app/test`), or reviewer
+- **Web UI** — homepage, annotator (`/annotator`), review (`/review`), or train (`/train`)
 
 ## Setup
 
@@ -47,9 +47,11 @@ python -c "import hashlib; print(hashlib.sha256(b'your-password').hexdigest())"
 
 | Path | Description |
 |------|-------------|
-| `/` | Login (redirects to `/app` when authenticated) |
-| `/app` | Main annotator / reviewer UI |
-| `/app/test` | Practice test rounds |
+| `/` | Homepage (requires login) |
+| `/login` | Login page |
+| `/annotator` | Annotator workspace |
+| `/review` | Review saved annotations |
+| `/train` | Training / practice rounds |
 | `/ws` | WebSocket (requires session cookie) |
 | `/api/health` | Health check (no auth) |
 | `/api/annotate` | Annotation API (`X-API-Key`) |
@@ -67,7 +69,7 @@ curl -X POST http://localhost:8080/api/annotate \
   -d '{"video_url": "https://example.com/video.mp4"}'
 ```
 
-Requires at least one connected annotator (open `/app` and choose **Annotator**).
+Requires at least one connected annotator (open `/annotator`).
 
 Health check:
 

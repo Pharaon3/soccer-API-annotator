@@ -88,7 +88,7 @@ async function redirectIfAlreadyLoggedIn() {
     if (!res.ok) return;
     const data = await res.json();
     if (data.authenticated) {
-      window.location.replace("/app");
+      window.location.replace("/");
     }
   } catch {
     /* stay on login */
@@ -124,7 +124,7 @@ loginForm?.addEventListener("submit", async (e) => {
     if (!res.ok) {
       throw new Error(data.detail || "Login failed");
     }
-    window.location.replace("/app");
+    window.location.replace("/");
   } catch (err) {
     msg.textContent = err.message || "Login failed";
     msg.classList.add("auth-error");

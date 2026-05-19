@@ -146,7 +146,8 @@ body.app-ready .app-boot {
   cursor: wait;
 }
 
-body.page-login {
+body.page-login,
+body.page-home {
   min-height: 100vh;
   display: flex;
   align-items: center;
@@ -442,6 +443,27 @@ body.page-login {
 .annotator-top-bar .countdown-hint {
   font-size: 0.62rem;
   margin-top: 0;
+}
+
+.connection-status {
+  margin: 0 0 0.65rem;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.85rem;
+  line-height: 1.35;
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px solid rgba(251, 191, 36, 0.35);
+  border-radius: 8px;
+}
+
+.connection-status.hidden {
+  display: none;
+}
+
+.connection-status.ok {
+  color: var(--success);
+  background: rgba(62, 207, 142, 0.1);
+  border-color: rgba(62, 207, 142, 0.35);
 }
 
 .sidebar-toolbar {

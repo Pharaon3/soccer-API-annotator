@@ -172,12 +172,15 @@ def _is_authenticated(request: Request) -> bool:
 
 
 def _login_redirect() -> RedirectResponse:
-    return RedirectResponse(url="/", status_code=302)
+    return RedirectResponse(url="/login", status_code=302)
+
+
+_PROTECTED_PAGE_PATHS = frozenset({"/", "/annotator", "/review", "/train"})
 
 
 def _is_browser_page_path(path: str) -> bool:
     normalized = path.rstrip("/") or "/"
-    return normalized in ("/app", "/app/test")
+    return normalized in _PROTECTED_PAGE_PATHS
 
 
 def _should_redirect_unauthenticated(request: Request) -> bool:
@@ -203,6 +206,10 @@ class ConnectionManager:
 
     @property
     def annotator_count(self) -> int:
+        return len(self.annotators)
+
+    @property
+    def participant_count(self) -> int:
         return len(self.participants)
 
     @property
@@ -849,7 +856,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Soccer Annotator API", lifespan=lifespan)
 
-_STATIC_CACHE_PATHS = frozenset({"/app.js", "/login.js", "/styles.css"})
+_STATIC_CACHE_PATHS = frozenset({"/app.js", "/login.js", "/home.js", "/styles.css"})
 
 
 @app.middleware("http")
@@ -896,7 +903,7 @@ async def annotate(
     if manager.annotator_count == 0:
         raise HTTPException(
             status_code=503,
-            detail="No annotators connected. Open the web UI first.",
+            detail="No annotators connected. Open /annotator in a browser while logged in and keep the tab open.",
         )
 
     try:
@@ -951,6 +958,7 @@ async def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "annotators_connected": manager.annotator_count,
+        "participants_connected": manager.participant_count,
         "test_annotators_connected": manager.test_annotator_count,
     }
 
@@ -1227,26 +1235,53 @@ def _serve_login_page() -> FileResponse:
 
 
 @app.get("/")
-async def serve_root(request: Request) -> Response:
+async def serve_home(request: Request) -> Response:
+    if not _is_authenticated(request):
+        return _login_redirect()
+    return _static_file("home.html")
+
+
+@app.get("/login")
+async def serve_login(request: Request) -> Response:
     if _is_authenticated(request):
-        return RedirectResponse(url="/app", status_code=302)
+        return RedirectResponse(url="/", status_code=302)
     return _serve_login_page()
+
+
+@app.get("/annotator")
+@app.get("/annotator/")
+async def serve_annotator(request: Request) -> Response:
+    if not _is_authenticated(request):
+        return _login_redirect()
+    return _static_file("annotator.html")
+
+
+@app.get("/review")
+@app.get("/review/")
+async def serve_review(request: Request) -> Response:
+    if not _is_authenticated(request):
+        return _login_redirect()
+    return _static_file("review.html")
+
+
+@app.get("/train")
+@app.get("/train/")
+async def serve_train(request: Request) -> Response:
+    if not _is_authenticated(request):
+        return _login_redirect()
+    return _static_file("test.html")
 
 
 @app.get("/app")
 @app.get("/app/")
-async def serve_app(request: Request) -> Response:
-    if not _is_authenticated(request):
-        return _login_redirect()
-    return _static_file("index.html")
+async def redirect_legacy_app() -> RedirectResponse:
+    return RedirectResponse(url="/annotator", status_code=301)
 
 
 @app.get("/app/test")
 @app.get("/app/test/")
-async def serve_test_app(request: Request) -> Response:
-    if not _is_authenticated(request):
-        return _login_redirect()
-    return _static_file("test.html")
+async def redirect_legacy_test() -> RedirectResponse:
+    return RedirectResponse(url="/train", status_code=301)
 
 
 @app.get("/app.js")
@@ -1257,6 +1292,11 @@ async def serve_app_js() -> FileResponse:
 @app.get("/login.js")
 async def serve_login_js() -> FileResponse:
     return _static_file("login.js")
+
+
+@app.get("/home.js")
+async def serve_home_js() -> FileResponse:
+    return _static_file("home.js")
 
 
 @app.get("/styles.css")
