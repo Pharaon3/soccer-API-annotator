@@ -80,6 +80,26 @@ def segment_duration_sec(rank: int, total: int) -> float:
     return segment_end_sec(rank, total) - segment_start_sec(rank, total)
 
 
+def playback_timing_for_rank(rank: int, total: int) -> dict[str, float]:
+    """Map annotator rank to local playback range and global timeline origin."""
+    global_start = segment_start_sec(rank, total)
+    global_end = segment_end_sec(rank, total)
+    clip_duration = segment_duration_sec(rank, total)
+    if annotator_uses_original_video(rank):
+        return {
+            "start_offset_sec": global_start,
+            "time_origin_sec": global_start,
+            "segment_end_sec": global_end,
+            "clip_duration_sec": clip_duration,
+        }
+    return {
+        "start_offset_sec": 0.0,
+        "time_origin_sec": global_start,
+        "segment_end_sec": clip_duration,
+        "clip_duration_sec": clip_duration,
+    }
+
+
 _VIDEO_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,200}$")
 
 
@@ -350,16 +370,11 @@ class ConnectionManager:
         self, job: ActiveJob, rank: int, session: AnnotatorSession
     ) -> dict[str, Any]:
         x = job.segment_total
-        start_offset, seg_end = self.segment_bounds(rank, total=x)
-        clip_duration = segment_duration_sec(rank, x)
+        timing = playback_timing_for_rank(rank, x)
         if annotator_uses_original_video(rank):
             playback_video_id = job.video_id
-            playback_start = start_offset
-            playback_end = seg_end
         else:
             playback_video_id = segment_video_id(job.video_id, rank)
-            playback_start = 0.0
-            playback_end = clip_duration
         return {
             "type": "annotate_start",
             "job_id": job.job_id,
@@ -370,30 +385,76 @@ class ConnectionManager:
             "annotator_id": session.annotator_id,
             "annotator_index": rank,
             "annotator_total": x,
-            "start_offset_sec": playback_start,
-            "time_origin_sec": start_offset,
-            "segment_end_sec": playback_end,
-            "clip_duration_sec": clip_duration,
             "segment_window_sec": SEGMENT_WINDOW_SEC,
             "duration_sec": ANNOTATE_DURATION_SEC,
             "seconds_left": api_seconds_left(job.deadline_at),
+            **timing,
         }
 
-    async def broadcast_annotate_job(self, job: ActiveJob) -> None:
+    async def _send_annotate_start(
+        self, job: ActiveJob, session: AnnotatorSession, rank: int
+    ) -> bool:
+        try:
+            await session.websocket.send_text(
+                json.dumps(self._annotate_start_payload(job, rank, session))
+            )
+            return True
+        except Exception:
+            return False
+
+    async def notify_annotate_ranks(self, job: ActiveJob, ranks: set[int]) -> None:
         dead: list[int] = []
-        for aid in sorted(job.rank_by_participant_id, key=job.rank_by_participant_id.get):
-            rank = job.rank_by_participant_id[aid]
+        for aid, rank in job.rank_by_participant_id.items():
+            if rank not in ranks:
+                continue
             session = self.participants.get(aid)
             if not session:
                 continue
-            try:
-                await session.websocket.send_text(
-                    json.dumps(self._annotate_start_payload(job, rank, session))
-                )
-            except Exception:
+            if not await self._send_annotate_start(job, session, rank):
                 dead.append(aid)
         for aid in dead:
             await self._drop_participant(aid)
+
+    async def dispatch_annotate_job_videos(
+        self,
+        job: ActiveJob,
+        video_path: Path,
+        *,
+        api_started_at: float,
+    ) -> None:
+        """Notify each annotator as soon as their file is ready (no wait for all encodes)."""
+        x = job.segment_total
+        video_id = job.video_id
+
+        if any(rank == 1 for rank in job.rank_by_participant_id.values()):
+            await self.notify_annotate_ranks(job, {1})
+
+        segment_ranks = [rank for rank in range(2, x + 1)]
+
+        async def encode_and_notify(rank: int) -> None:
+            start = segment_start_sec(rank, x)
+            duration = segment_duration_sec(rank, x)
+            dest = segment_video_path(video_id, rank)
+            step_started = time.time()
+            await split_video_segment(video_path, dest, start, duration)
+            _log_video_saved(
+                job_id=job.job_id,
+                video_id=segment_video_id(video_id, rank),
+                label="segment",
+                path=dest,
+                api_started_at=api_started_at,
+                step_duration=time.time() - step_started,
+                rank=rank,
+            )
+            await self.notify_annotate_ranks(job, {rank})
+
+        if segment_ranks:
+            await asyncio.gather(*[encode_and_notify(rank) for rank in segment_ranks])
+
+    async def broadcast_annotate_job(self, job: ActiveJob) -> None:
+        await self.notify_annotate_ranks(
+            job, set(job.rank_by_participant_id.values())
+        )
 
     async def send_active_annotate_job(self, session: AnnotatorSession) -> None:
         if not active_jobs:
@@ -426,7 +487,6 @@ class ConnectionManager:
         deadline_at: float,
     ) -> dict[str, Any]:
         x = state.segment_total
-        start_offset, seg_end = self.segment_bounds(rank, total=x)
         return {
             "type": "test_start",
             "job_id": state.job_id,
@@ -438,11 +498,8 @@ class ConnectionManager:
             "annotator_id": session.annotator_id,
             "annotator_index": rank,
             "annotator_total": x,
-            "start_offset_sec": start_offset,
-            "time_origin_sec": start_offset,
-            "segment_end_sec": seg_end,
-            "clip_duration_sec": segment_duration_sec(rank, x),
             "segment_window_sec": SEGMENT_WINDOW_SEC,
+            **playback_timing_for_rank(rank, x),
         }
 
     async def broadcast_test_job(self, state: TestJobState, *, deadline_at: float) -> None:
@@ -605,48 +662,6 @@ async def split_video_segment(src: Path, dest: Path, start: float, duration: flo
     )
 
 
-async def create_user_segments(
-    video_id: str,
-    video_path: Path,
-    total: int,
-    *,
-    job_id: str,
-    api_started_at: float,
-) -> None:
-    async def split_one(rank: int) -> None:
-        start = segment_start_sec(rank, total)
-        duration = segment_duration_sec(rank, total)
-        dest = segment_video_path(video_id, rank)
-        step_started = time.time()
-        await split_video_segment(video_path, dest, start, duration)
-        _log_video_saved(
-            job_id=job_id,
-            video_id=segment_video_id(video_id, rank),
-            label="segment",
-            path=dest,
-            api_started_at=api_started_at,
-            step_duration=time.time() - step_started,
-            rank=rank,
-        )
-
-    segment_ranks = [rank for rank in range(2, total + 1)]
-    if segment_ranks:
-        await asyncio.gather(*[split_one(rank) for rank in segment_ranks])
-
-    total_bytes = sum(
-        segment_video_path(video_id, rank).stat().st_size
-        for rank in segment_ranks
-        if segment_video_path(video_id, rank).is_file()
-    )
-    logger.debug(
-        "Video timing job=%s video_id=%s segments_total_size=%.2fMB elapsed_since_api=%.2fs",
-        job_id,
-        video_id,
-        total_bytes / (1024 * 1024),
-        _elapsed_since(api_started_at),
-    )
-
-
 def load_cached(video_url: str) -> dict[str, Any] | None:
     try:
         vid = video_id_from_url(video_url)
@@ -718,17 +733,16 @@ async def run_annotate_job(video_url: str) -> dict[str, Any]:
         cached=source_cached,
     )
 
-    segments_started = time.time()
-    await create_user_segments(
-        video_id, video_path, x, job_id=job_id, api_started_at=started_at
+    dispatch_started = time.time()
+    await manager.dispatch_annotate_job_videos(
+        job, video_path, api_started_at=started_at
     )
     logger.debug(
-        "Annotate job %s segments encoded count=%d in %.2fs",
+        "Annotate job %s videos dispatched to %d annotators in %.2fs",
         job_id,
         x,
-        time.time() - segments_started,
+        time.time() - dispatch_started,
     )
-    await manager.broadcast_annotate_job(job)
 
     remaining = deadline_at - time.time()
     if remaining > 0:
@@ -1080,7 +1094,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     annotator_session = await manager.register_annotator(websocket)
                     rank = manager.rank_of_participant(annotator_session.annotator_id)
                     x = manager.annotator_count
-                    seg_start, seg_end = manager.segment_bounds(rank, total=x)
                     await websocket.send_text(
                         json.dumps(
                             {
@@ -1089,11 +1102,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                                 "annotator_id": annotator_session.annotator_id,
                                 "annotator_index": rank,
                                 "annotator_total": x,
-                                "start_offset_sec": seg_start,
-                                "time_origin_sec": seg_start,
-                                "segment_end_sec": seg_end,
-                                "clip_duration_sec": segment_duration_sec(rank, x),
                                 "segment_window_sec": SEGMENT_WINDOW_SEC,
+                                **playback_timing_for_rank(rank, x),
                             }
                         )
                     )
@@ -1122,7 +1132,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     annotator_session = await manager.register_test_annotator(websocket)
                     rank = manager.rank_of_participant(annotator_session.annotator_id)
                     x = manager.annotator_count
-                    seg_start, seg_end = manager.segment_bounds(rank, total=x)
                     await websocket.send_text(
                         json.dumps(
                             {
@@ -1131,11 +1140,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                                 "annotator_id": annotator_session.annotator_id,
                                 "annotator_index": rank,
                                 "annotator_total": x,
-                                "start_offset_sec": seg_start,
-                                "time_origin_sec": seg_start,
-                                "segment_end_sec": seg_end,
-                                "clip_duration_sec": segment_duration_sec(rank, x),
                                 "segment_window_sec": SEGMENT_WINDOW_SEC,
+                                **playback_timing_for_rank(rank, x),
                             }
                         )
                     )
