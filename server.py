@@ -6,21 +6,23 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import random
-import re
-import shutil
 import time
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
 import httpx
+from dotenv import load_dotenv
 from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field, HttpUrl
 
 from auth import (
-    AUTH_COOKIE_NAME,
     APP_PASSWORD_HASH,
+    AUTH_COOKIE_NAME,
     create_session,
     revoke_session,
     verify_api_key,
@@ -28,24 +30,22 @@ from auth import (
     verify_password_plain,
     verify_session,
 )
-from video_processing import (
-    cleanup_job_dir,
-    download_job_video,
-    job_video_api_url,
-    segment_duration_sec,
-)
 
-logging.basicConfig(level=logging.INFO)
+load_dotenv()
+
+logging.basicConfig(
+    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format="%(levelname)s %(name)s: %(message)s",
+)
 logger = logging.getLogger(__name__)
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 VIDEOS_DIR = DATA_DIR / "videos"
 ANNOTATIONS_DIR = DATA_DIR / "annotations"
-JOBS_DIR = DATA_DIR / "jobs"
 STATIC_DIR = ROOT / "static"
 
-for d in (VIDEOS_DIR, ANNOTATIONS_DIR, JOBS_DIR, STATIC_DIR):
+for d in (VIDEOS_DIR, ANNOTATIONS_DIR, STATIC_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 LABELS = [
@@ -70,8 +70,24 @@ ANNOTATE_DURATION_SEC = 22
 CACHE_DELAY_MIN_SEC = 10
 CACHE_DELAY_MAX_SEC = 15
 SEGMENT_WINDOW_SEC = 30
-RESPONSE_TIMEOUT_SEC = 22
 TEST_INTERVAL_SEC = 30
+
+
+def segment_start_sec(rank: int, total: int) -> float:
+    x = max(total, 1)
+    return SEGMENT_WINDOW_SEC / x * (rank - 1)
+
+
+def segment_end_sec(rank: int, total: int) -> float:
+    return segment_start_sec(rank, total) + SEGMENT_WINDOW_SEC / max(total, 1)
+
+
+def segment_duration_sec(rank: int, total: int) -> float:
+    return segment_end_sec(rank, total) - segment_start_sec(rank, total)
+
+
+def url_key(video_url: str) -> str:
+    return hashlib.sha256(video_url.encode()).hexdigest()[:16]
 
 
 def _remove_annotation_event(
@@ -83,14 +99,6 @@ def _remove_annotation_event(
             events.pop(i)
             return True
     return False
-
-
-def url_key(video_url: str) -> str:
-    return hashlib.sha256(video_url.encode()).hexdigest()[:16]
-
-
-def safe_filename(name: str) -> str:
-    return re.sub(r"[^\w.\-]", "_", name)
 
 
 @dataclass
@@ -105,24 +113,18 @@ class ActiveJob:
     job_id: str
     video_url: str
     video_key: str
-    local_path: Path
     started_at: float
-    job_dir: Path
-    hosted_video: Path | None = None
     segment_total: int = 1
     rank_by_participant_id: dict[int, int] = field(default_factory=dict)
-    events: list[dict[str, Any]] = field(default_factory=list)
-    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 @dataclass
 class TestJobState:
     job_id: str
     video_key: str
-    job_dir: Path
+    video_url: str
     segment_total: int
     rank_by_participant_id: dict[int, int]
-    hosted_video: Path | None = None
 
 
 class AnnotateRequest(BaseModel):
@@ -157,7 +159,6 @@ class ConnectionManager:
 
     @property
     def annotator_count(self) -> int:
-        """All connected annotator-capable clients (annotate, test, review pages)."""
         return len(self.participants)
 
     @property
@@ -229,32 +230,24 @@ class ConnectionManager:
         for aid in dead:
             del self.test_annotators[aid]
 
-    async def unregister(self, ws: WebSocket) -> None:
-        await self.leave_role(ws)
-
     async def leave_role(self, ws: WebSocket) -> None:
-        to_remove = [
-            aid for aid, s in self.annotators.items() if s.websocket is ws
-        ]
-        for aid in to_remove:
-            del self.annotators[aid]
-        test_remove = [
-            aid for aid, s in self.test_annotators.items() if s.websocket is ws
-        ]
-        for aid in test_remove:
-            del self.test_annotators[aid]
+        for aid, s in list(self.annotators.items()):
+            if s.websocket is ws:
+                del self.annotators[aid]
+        for aid, s in list(self.test_annotators.items()):
+            if s.websocket is ws:
+                del self.test_annotators[aid]
         self.reviewers.discard(ws)
-        participant_remove = [
+        removed = [
             aid for aid, s in self.participants.items() if s.websocket is ws
         ]
-        for aid in participant_remove:
+        for aid in removed:
             del self.participants[aid]
-        if participant_remove:
+        if removed:
             await self._broadcast_annotator_count()
 
     async def _broadcast_annotator_count(self) -> None:
-        count = self.annotator_count
-        msg = json.dumps({"type": "annotator_count", "count": count})
+        msg = json.dumps({"type": "annotator_count", "count": self.annotator_count})
         dead: list[int] = []
         for aid, session in self.participants.items():
             try:
@@ -288,45 +281,41 @@ class ConnectionManager:
         return {s.annotator_id: rank for rank, s in enumerate(sessions, start=1)}
 
     def start_offset_for(self, annotator_index: int, total: int | None = None) -> float:
-        """annotator_index is 1-based (y)."""
         x = max(total if total is not None else self.annotator_count, 1)
-        return SEGMENT_WINDOW_SEC / x * (annotator_index - 1)
+        return segment_start_sec(annotator_index, x)
 
     def segment_end_for(self, annotator_index: int, total: int | None = None) -> float:
         x = max(total if total is not None else self.annotator_count, 1)
-        return self.start_offset_for(annotator_index, total) + SEGMENT_WINDOW_SEC / x
+        return segment_end_sec(annotator_index, x)
 
     def segment_bounds(
         self, annotator_index: int, total: int | None = None
     ) -> tuple[float, float]:
-        start = self.start_offset_for(annotator_index, total)
-        end = self.segment_end_for(annotator_index, total)
-        return start, end
+        return self.start_offset_for(annotator_index, total), self.segment_end_for(
+            annotator_index, total
+        )
 
     def _annotate_start_payload(
         self, job: ActiveJob, rank: int, session: AnnotatorSession
     ) -> dict[str, Any]:
         x = job.segment_total
-        start_offset, segment_end = self.segment_bounds(rank, total=x)
+        start_offset, seg_end = self.segment_bounds(rank, total=x)
         return {
             "type": "annotate_start",
             "job_id": job.job_id,
-            "video_url": job_video_api_url(job.job_id),
+            "video_url": job.video_url,
             "annotator_id": session.annotator_id,
             "annotator_index": rank,
             "annotator_total": x,
             "start_offset_sec": start_offset,
             "time_origin_sec": start_offset,
-            "segment_end_sec": segment_end,
+            "segment_end_sec": seg_end,
             "clip_duration_sec": segment_duration_sec(rank, x),
             "segment_window_sec": SEGMENT_WINDOW_SEC,
             "duration_sec": ANNOTATE_DURATION_SEC,
         }
 
     async def broadcast_annotate_job(self, job: ActiveJob) -> None:
-        if not job.hosted_video or not job.hosted_video.is_file():
-            logger.error("Job %s: video not ready for broadcast", job.job_id)
-            return
         dead: list[int] = []
         for aid in sorted(job.rank_by_participant_id, key=job.rank_by_participant_id.get):
             rank = job.rank_by_participant_id[aid]
@@ -343,7 +332,6 @@ class ConnectionManager:
             await self._drop_participant(aid)
 
     async def send_active_annotate_job(self, session: AnnotatorSession) -> None:
-        """Re-send in-progress job after reconnect (e.g. test page → annotator)."""
         if not active_jobs:
             return
         job_id, job = max(active_jobs.items(), key=lambda item: item[1].started_at)
@@ -351,19 +339,17 @@ class ConnectionManager:
         if rank is None:
             return
         x = job.segment_total
-        start_offset, segment_end = self.segment_bounds(rank, total=x)
-        if not job.hosted_video or not job.hosted_video.is_file():
-            return
+        start_offset, seg_end = self.segment_bounds(rank, total=x)
         payload = {
             "type": "annotate_start",
             "job_id": job_id,
-            "video_url": job_video_api_url(job_id),
+            "video_url": job.video_url,
             "annotator_id": session.annotator_id,
             "annotator_index": rank,
             "annotator_total": x,
             "start_offset_sec": start_offset,
             "time_origin_sec": start_offset,
-            "segment_end_sec": segment_end,
+            "segment_end_sec": seg_end,
             "clip_duration_sec": segment_duration_sec(rank, x),
             "segment_window_sec": SEGMENT_WINDOW_SEC,
             "duration_sec": ANNOTATE_DURATION_SEC,
@@ -385,27 +371,24 @@ class ConnectionManager:
         self, state: TestJobState, rank: int, session: AnnotatorSession
     ) -> dict[str, Any]:
         x = state.segment_total
-        start_offset, segment_end = self.segment_bounds(rank, total=x)
+        start_offset, seg_end = self.segment_bounds(rank, total=x)
         return {
             "type": "test_start",
             "job_id": state.job_id,
             "video_key": state.video_key,
             "duration_sec": ANNOTATE_DURATION_SEC,
-            "video_url": job_video_api_url(state.job_id),
+            "video_url": state.video_url,
             "annotator_id": session.annotator_id,
             "annotator_index": rank,
             "annotator_total": x,
             "start_offset_sec": start_offset,
             "time_origin_sec": start_offset,
-            "segment_end_sec": segment_end,
+            "segment_end_sec": seg_end,
             "clip_duration_sec": segment_duration_sec(rank, x),
             "segment_window_sec": SEGMENT_WINDOW_SEC,
         }
 
     async def broadcast_test_job(self, state: TestJobState) -> None:
-        if not state.hosted_video or not state.hosted_video.is_file():
-            logger.error("Test %s: video not ready for broadcast", state.job_id)
-            return
         dead: list[int] = []
         for aid in sorted(
             state.rank_by_participant_id, key=state.rank_by_participant_id.get
@@ -432,12 +415,7 @@ class ConnectionManager:
         test_only: bool = False,
     ) -> None:
         msg = json.dumps(
-            {
-                "type": "job_event",
-                "job_id": job_id,
-                "action": action,
-                "event": event,
-            }
+            {"type": "job_event", "job_id": job_id, "action": action, "event": event}
         )
         targets = (
             self.test_annotators.values()
@@ -458,6 +436,7 @@ class ConnectionManager:
                 await self._drop_participant(aid)
 
     async def notify_reviewers_video_saved(self, video_key: str) -> None:
+        del video_key  # broadcast is a simple refresh signal
         msg = json.dumps({"type": "videos_updated"})
         dead: set[WebSocket] = set()
         for ws in self.reviewers:
@@ -475,17 +454,100 @@ active_test_jobs: set[str] = set()
 test_job_events: dict[str, list[dict[str, Any]]] = {}
 test_job_states: dict[str, TestJobState] = {}
 
-app = FastAPI(title="Soccer Annotator API")
+
+def cache_paths(video_key: str) -> tuple[Path, Path, Path]:
+    meta = ANNOTATIONS_DIR / f"{video_key}.meta.json"
+    events_file = ANNOTATIONS_DIR / f"{video_key}.json"
+    return meta, events_file, VIDEOS_DIR / f"{video_key}.mp4"
+
+
+def load_cached(video_url: str) -> dict[str, Any] | None:
+    key = url_key(video_url)
+    _, events_file, _ = cache_paths(key)
+    if events_file.is_file():
+        return json.loads(events_file.read_text(encoding="utf-8"))
+    return None
+
+
+async def download_video(url: str, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    async with httpx.AsyncClient(follow_redirects=True, timeout=120.0) as client:
+        async with client.stream("GET", url) as resp:
+            resp.raise_for_status()
+
+            def write_chunk(data: bytes) -> None:
+                with dest.open("ab") as f:
+                    f.write(data)
+
+            if dest.is_file():
+                dest.unlink()
+            async for chunk in resp.aiter_bytes():
+                await asyncio.to_thread(write_chunk, chunk)
+
+
+async def cache_video_for_reviewer(video_url: str, video_path: Path) -> None:
+    if video_path.is_file():
+        return
+    try:
+        await download_video(video_url, video_path)
+    except httpx.HTTPError:
+        logger.exception("Reviewer cache download failed for %s", video_url)
+
+
+async def run_annotate_job(video_url: str) -> dict[str, Any]:
+    key = url_key(video_url)
+    job_id = f"{key}-{int(time.time() * 1000)}"
+    _, _, video_path = cache_paths(key)
+
+    sessions = manager.snapshot_participants()
+    rank_by_id = manager.ranks_for_sessions(sessions)
+    x = len(sessions)
+
+    job = ActiveJob(
+        job_id=job_id,
+        video_url=video_url,
+        video_key=key,
+        started_at=time.time(),
+        segment_total=x,
+        rank_by_participant_id=rank_by_id,
+    )
+    active_jobs[job_id] = job
+    job_events[job_id] = []
+
+    logger.info("Annotate job %s: %d users %s", job_id, x, rank_by_id)
+    await manager.broadcast_annotate_job(job)
+    await asyncio.sleep(ANNOTATE_DURATION_SEC)
+
+    events = sorted(job_events.pop(job_id, []), key=lambda e: e["time_sec"])
+    active_jobs.pop(job_id, None)
+
+    api_events = [{"time_sec": e["time_sec"], "label": e["label"]} for e in events]
+    meta, events_file, _ = cache_paths(key)
+    events_file.write_text(
+        json.dumps({"events": api_events}, indent=2), encoding="utf-8"
+    )
+    meta.write_text(
+        json.dumps(
+            {
+                "video_url": video_url,
+                "video_key": key,
+                "saved_at": time.time(),
+                "local_file": video_path.name if video_path.is_file() else None,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    if not video_path.is_file():
+        asyncio.create_task(cache_video_for_reviewer(video_url, video_path))
+
+    await manager.notify_reviewers_video_saved(key)
+    return {"events": api_events}
 
 
 async def run_test_round() -> None:
     videos = _list_videos_data()
-    if not videos:
-        manager.schedule_next_test_round()
-        await manager.broadcast_test_schedule()
-        return
-
-    if manager.test_annotator_count == 0:
+    if not videos or manager.test_annotator_count == 0:
         manager.schedule_next_test_round()
         await manager.broadcast_test_schedule()
         return
@@ -502,40 +564,34 @@ async def run_test_round() -> None:
     job_id = f"test-{video_key}-{int(time.time() * 1000)}"
     active_test_jobs.add(job_id)
     test_job_events[job_id] = []
-    job_dir = JOBS_DIR / job_id
+
     sessions = manager.snapshot_test_annotators()
     if not sessions:
+        active_test_jobs.discard(job_id)
+        test_job_events.pop(job_id, None)
         manager.schedule_next_test_round()
         await manager.broadcast_test_schedule()
         return
-    rank_by_id = manager.ranks_for_sessions(sessions)
-    x = len(sessions)
-    local_video = VIDEOS_DIR / f"{video_key}.mp4"
 
+    rank_by_id = manager.ranks_for_sessions(sessions)
     state = TestJobState(
         job_id=job_id,
         video_key=video_key,
-        job_dir=job_dir,
-        segment_total=x,
+        video_url=remote_url,
+        segment_total=len(sessions),
         rank_by_participant_id=rank_by_id,
     )
     test_job_states[job_id] = state
 
     try:
-        state.hosted_video = await download_job_video(
-            job_dir,
-            remote_url,
-            download_video,
-            local_source=local_video if local_video.is_file() else None,
-        )
-        logger.info("Test job %s: hosted video for %d users %s", job_id, x, rank_by_id)
+        logger.info("Test job %s: %d users", job_id, state.segment_total)
         await manager.broadcast_test_job(state)
         await asyncio.sleep(ANNOTATE_DURATION_SEC)
     finally:
         active_test_jobs.discard(job_id)
         test_job_events.pop(job_id, None)
         test_job_states.pop(job_id, None)
-        cleanup_job_dir(job_dir)
+
     manager.schedule_next_test_round()
     await manager.broadcast_test_schedule()
 
@@ -556,121 +612,21 @@ async def _test_scheduler_loop() -> None:
             await manager.broadcast_test_schedule()
 
 
-@app.on_event("startup")
-async def _start_test_scheduler() -> None:
-    asyncio.create_task(_test_scheduler_loop())
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    del app
+    if not APP_PASSWORD_HASH:
+        logger.warning("APP_PASSWORD_HASH is not set — web login will fail")
+    task = asyncio.create_task(_test_scheduler_loop())
+    yield
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
-def cache_paths(video_key: str) -> tuple[Path, Path, Path]:
-    meta = ANNOTATIONS_DIR / f"{video_key}.meta.json"
-    events_file = ANNOTATIONS_DIR / f"{video_key}.json"
-    return meta, events_file, VIDEOS_DIR / f"{video_key}.mp4"
-
-
-def load_cached(video_url: str) -> dict[str, Any] | None:
-    key = url_key(video_url)
-    _, events_file, video_path = cache_paths(key)
-    if events_file.is_file() and video_path.is_file():
-        return json.loads(events_file.read_text(encoding="utf-8"))
-    return None
-
-
-def save_cached(video_url: str, events: list[dict[str, Any]], local_video: Path) -> None:
-    key = url_key(video_url)
-    meta, events_file, dest_video = cache_paths(key)
-    if local_video != dest_video and local_video.is_file():
-        dest_video.write_bytes(local_video.read_bytes())
-    payload = {"events": events}
-    events_file.write_text(
-        json.dumps(payload, indent=2), encoding="utf-8"
-    )
-    meta.write_text(
-        json.dumps(
-            {
-                "video_url": video_url,
-                "video_key": key,
-                "saved_at": time.time(),
-                "local_file": dest_video.name,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-
-
-async def download_video(url: str, dest: Path) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    async with httpx.AsyncClient(follow_redirects=True, timeout=120.0) as client:
-        async with client.stream("GET", url) as resp:
-            resp.raise_for_status()
-
-            def write_chunk(data: bytes) -> None:
-                with dest.open("ab") as f:
-                    f.write(data)
-
-            if dest.is_file():
-                dest.unlink()
-            async for chunk in resp.aiter_bytes():
-                await asyncio.to_thread(write_chunk, chunk)
-
-
-async def run_annotate_job(video_url: str) -> dict[str, Any]:
-    key = url_key(video_url)
-    job_id = f"{key}-{int(time.time() * 1000)}"
-    _, _, video_path = cache_paths(key)
-    deadline = time.time() + RESPONSE_TIMEOUT_SEC
-    job_dir = JOBS_DIR / job_id
-    sessions = manager.snapshot_participants()
-    rank_by_id = manager.ranks_for_sessions(sessions)
-    x = len(sessions)
-
-    job = ActiveJob(
-        job_id=job_id,
-        video_url=video_url,
-        video_key=key,
-        local_path=video_path,
-        started_at=time.time(),
-        job_dir=job_dir,
-        segment_total=x,
-        rank_by_participant_id=rank_by_id,
-    )
-    active_jobs[job_id] = job
-    job_events[job_id] = []
-    job.hosted_video = await download_job_video(
-        job_dir, video_url, download_video
-    )
-    logger.info(
-        "Annotate job %s: hosted full video for %d users %s",
-        job_id,
-        x,
-        rank_by_id,
-    )
-    await manager.broadcast_annotate_job(job)
-
-    remaining = deadline - time.time()
-    if remaining > 0:
-        await asyncio.sleep(remaining)
-
-    events = sorted(job_events.get(job_id, []), key=lambda e: e["time_sec"])
-    result = {"events": events}
-
-    if job.hosted_video and job.hosted_video.is_file() and not video_path.is_file():
-        video_path.parent.mkdir(parents=True, exist_ok=True)
-        await asyncio.to_thread(shutil.copy2, job.hosted_video, video_path)
-    if video_path.is_file():
-        save_cached(video_url, events, video_path)
-
-    active_jobs.pop(job_id, None)
-    job_events.pop(job_id, None)
-    cleanup_job_dir(job_dir)
-    await manager.notify_reviewers_video_saved(key)
-    return result
-
-
-async def _ensure_video_downloaded(video_url: str, video_path: Path) -> None:
-    if video_path.is_file():
-        return
-    await download_video(video_url, video_path)
+app = FastAPI(title="Soccer Annotator API", lifespan=lifespan)
 
 
 @app.post("/api/annotate")
@@ -691,17 +647,14 @@ async def annotate(
     if manager.annotator_count == 0:
         raise HTTPException(
             status_code=503,
-            detail="No annotators connected. Open the web UI (annotate, test, or review) first.",
+            detail="No annotators connected. Open the web UI first.",
         )
 
     try:
         result = await run_annotate_job(video_url)
     except httpx.HTTPError as exc:
-        logger.exception("Failed to download video")
-        raise HTTPException(status_code=502, detail=f"Video download failed: {exc}") from exc
-    except RuntimeError as exc:
-        logger.exception("Video processing failed")
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        logger.exception("Annotate job failed")
+        raise HTTPException(status_code=502, detail=f"Request failed: {exc}") from exc
 
     return JSONResponse(content=result)
 
@@ -746,6 +699,7 @@ async def auth_verify(body: VerifyHashRequest) -> JSONResponse:
         httponly=True,
         samesite="lax",
         max_age=60 * 60 * 24 * 7,
+        secure=os.getenv("COOKIE_SECURE", "").lower() in ("1", "true", "yes"),
     )
     return response
 
@@ -774,30 +728,6 @@ async def get_video_file(video_key: str, request: Request) -> FileResponse:
     _require_auth(request)
     path = VIDEOS_DIR / f"{video_key}.mp4"
     if not path.is_file():
-        raise HTTPException(status_code=404, detail="Video not found")
-    return FileResponse(path, media_type="video/mp4")
-
-
-def _resolve_job_video(job_id: str) -> Path | None:
-    if job_id in active_jobs:
-        path = active_jobs[job_id].hosted_video
-        if path and path.is_file():
-            return path
-    if job_id in test_job_states:
-        path = test_job_states[job_id].hosted_video
-        if path and path.is_file():
-            return path
-    fallback = JOBS_DIR / job_id / "video.mp4"
-    if fallback.is_file():
-        return fallback
-    return None
-
-
-@app.get("/api/jobs/{job_id}/video.mp4")
-async def get_job_video(job_id: str, request: Request) -> FileResponse:
-    _require_auth(request)
-    path = _resolve_job_video(job_id)
-    if not path:
         raise HTTPException(status_code=404, detail="Video not found")
     return FileResponse(path, media_type="video/mp4")
 
@@ -835,11 +765,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             msg_type = data.get("type")
 
             if msg_type == "set_role":
-                new_role = data.get("role")
                 if role is not None:
                     await manager.leave_role(websocket)
                     annotator_session = None
-                role = new_role
+                role = data.get("role")
                 if role == "annotator":
                     annotator_session = await manager.register_annotator(websocket)
                     rank = manager.rank_of_participant(annotator_session.annotator_id)
@@ -866,13 +795,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     reviewer_session = await manager.register_reviewer(websocket)
                     rank = manager.rank_of_participant(reviewer_session.annotator_id)
                     x = manager.annotator_count
-                    videos = _list_videos_data()
                     await websocket.send_text(
                         json.dumps(
                             {
                                 "type": "role_ack",
                                 "role": "reviewer",
-                                "videos": videos,
+                                "videos": _list_videos_data(),
                                 "annotator_id": reviewer_session.annotator_id,
                                 "annotator_index": rank,
                                 "annotator_total": x,
@@ -910,9 +838,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 job_id = data.get("job_id")
                 label = data.get("label")
                 time_sec = data.get("time_sec")
-                if label not in LABELS:
-                    continue
-                if job_id not in active_test_jobs:
+                if label not in LABELS or job_id not in active_test_jobs:
                     continue
                 pid = annotator_session.annotator_id if annotator_session else 0
                 event = {
@@ -931,9 +857,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 job_id = data.get("job_id")
                 label = data.get("label")
                 time_sec = data.get("time_sec")
-                if label not in LABELS:
-                    continue
-                if job_id not in job_events:
+                if label not in LABELS or job_id not in job_events:
                     continue
                 pid = annotator_session.annotator_id if annotator_session else 0
                 event = {
@@ -943,13 +867,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     "uid": f"p{pid}-{round(float(time_sec), 2)}-{label}",
                 }
                 job_events[job_id].append(event)
-                if job_id in active_jobs:
-                    async with active_jobs[job_id].lock:
-                        active_jobs[job_id].events.append(event)
                 await manager.broadcast_job_event(job_id, event, "add")
                 continue
 
-            if msg_type == "annotation_remove" and role in ("annotator", "test", "reviewer"):
+            if msg_type == "annotation_remove" and role in (
+                "annotator",
+                "test",
+                "reviewer",
+            ):
                 job_id = data.get("job_id")
                 label = data.get("label")
                 time_sec = data.get("time_sec")
@@ -975,11 +900,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     )
                 elif job_id in job_events:
                     _remove_annotation_event(job_events[job_id], time_sec, label)
-                    if job_id in active_jobs:
-                        async with active_jobs[job_id].lock:
-                            _remove_annotation_event(
-                                active_jobs[job_id].events, time_sec, label
-                            )
                     await manager.broadcast_job_event(
                         job_id,
                         {
@@ -993,16 +913,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 continue
 
             if msg_type == "list_videos" and role == "reviewer":
-                videos = _list_videos_data()
                 await websocket.send_text(
-                    json.dumps({"type": "videos_list", "videos": videos})
+                    json.dumps(
+                        {"type": "videos_list", "videos": _list_videos_data()}
+                    )
                 )
 
     except WebSocketDisconnect:
         pass
     finally:
         manager.connections.discard(websocket)
-        await manager.unregister(websocket)
+        await manager.leave_role(websocket)
 
 
 def _static_file(name: str) -> FileResponse:
@@ -1080,10 +1001,13 @@ async def serve_styles() -> FileResponse:
 if __name__ == "__main__":
     import uvicorn
 
+    host = os.getenv("HOST", "0.0.0.0")
+    port = int(os.getenv("PORT", "8080"))
+    reload = os.getenv("ANNOTATOR_RELOAD", "").lower() in ("1", "true", "yes")
     uvicorn.run(
         "server:app",
-        host="0.0.0.0",
-        port=8080,
-        reload=True,
+        host=host,
+        port=port,
+        reload=reload,
         reload_excludes=["data/*", "data/**"],
     )

@@ -4,49 +4,54 @@ API and web UI for crowd-sourced soccer event annotation on short video clips.
 
 ## Features
 
-- **POST `/api/annotate`** — send a `video_url`; after 22 seconds returns merged JSON `{ "events": [{ "time_sec", "label" }, ...] }`
-- **Cached videos** — repeat requests for the same URL wait a random **10–15 seconds**, then return stored JSON
-- **Multi-annotator sync** — server hosts the full downloaded video; each annotator plays from their offset in the 30s window
-- **Web UI** — annotator (auto-play, 15 labels, shortcuts, overlay) or reviewer (browse saved results)
+- **POST `/api/annotate`** — send a public `video_url`; after 22 seconds returns merged JSON `{ "events": [{ "time_sec", "label" }, ...] }`
+- **Direct playback** — annotators load the public video URL in the browser (no server-side hosting during jobs)
+- **Multi-annotator sync** — each user plays their slice of a 30s window from the same source URL
+- **Cached responses** — repeat requests for the same URL wait 10–15s, then return stored JSON
+- **Web UI** — annotator, practice test (`/app/test`), or reviewer
 
 ## Setup
 
 ```bash
-cd e:\Soccer\Scripts\annotator
 python -m venv .venv
-.venv\Scripts\activate
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate     # Linux/macOS
 pip install -r requirements.txt
-copy .env.example .env
-# Edit .env — set API_KEY, ADMIN_USERNAME, ADMIN_PASSWORD, SESSION_SECRET
+cp .env.example .env            # edit API_KEY, APP_PASSWORD_HASH, SESSION_SECRET
 python server.py
 ```
 
-## Authentication
+Open http://localhost:8080 and log in with your app password.
 
-- **Sign up** — creates a pending account; an admin must approve before login works.
-- **Admin** — log in via “Admin login” using credentials from `.env` (`ADMIN_USERNAME` / `ADMIN_PASSWORD`).
-- **Web UI** — users log in first, then choose Annotator or Reviewer.
+## Environment
 
-## API key
+| Variable | Description |
+|----------|-------------|
+| `API_KEY` | Required for `POST /api/annotate` (`X-API-Key` header) |
+| `APP_PASSWORD_HASH` | SHA-256 hex of the web UI password |
+| `SESSION_SECRET` | Random string for session cookies |
+| `HOST` | Bind address (default `0.0.0.0`) |
+| `PORT` | HTTP port (default `8080`) |
+| `COOKIE_SECURE` | Set `true` behind HTTPS |
+| `ANNOTATOR_RELOAD` | Set `true` only for local dev (auto-reload) |
+| `LOG_LEVEL` | `INFO`, `DEBUG`, etc. |
 
-Send the annotate API key on every `POST /api/annotate` request:
+Generate password hash:
 
-```http
-X-API-Key: your-key-from-env
+```bash
+python -c "import hashlib; print(hashlib.sha256(b'your-password').hexdigest())"
 ```
-
-Open http://localhost:8000 — choose **Annotator** on each machine/tab that will annotate.
 
 ## API
 
 ```bash
-curl -X POST http://localhost:8000/api/annotate ^
-  -H "Content-Type: application/json" ^
-  -H "X-API-Key: dev-api-key-change-in-production" ^
-  -d "{\"video_url\": \"https://scoredata.me/chunks/8cfe43e516de4ee6bcb77e3716e5e6.mp4\"}"
+curl -X POST http://localhost:8080/api/annotate \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your-key-from-env" \
+  -d '{"video_url": "https://example.com/video.mp4"}'
 ```
 
-Requires at least one connected annotator. Response after **22 seconds** (first request) or **10–15 seconds** at random (cached URL).
+Requires at least one connected annotator (open `/app` and choose **Annotator**).
 
 ## Label shortcuts
 
@@ -70,6 +75,16 @@ Requires at least one connected annotator. Response after **22 seconds** (first 
 
 ## Data layout
 
-- `data/videos/{key}.mp4` — downloaded clips
 - `data/annotations/{key}.json` — event JSON
 - `data/annotations/{key}.meta.json` — source URL metadata
+- `data/videos/{key}.mp4` — optional local copy for reviewer fallback
+
+## Production
+
+```bash
+export PORT=8080
+export COOKIE_SECURE=true
+uvicorn server:app --host 0.0.0.0 --port 8080 --workers 1
+```
+
+Use a reverse proxy (nginx, Caddy) for HTTPS. WebSocket path: `/ws`.

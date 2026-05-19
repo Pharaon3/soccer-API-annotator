@@ -409,16 +409,6 @@ function updateVideoHud() {
   updatePlayPauseButton();
 }
 
-function prefetchVideoUrl(url) {
-  if (!url) return;
-  const link = document.createElement("link");
-  link.rel = "preload";
-  link.as = "video";
-  link.href = url;
-  document.head.appendChild(link);
-  setTimeout(() => link.remove(), 60_000);
-}
-
 function updateTimelineSeekRange() {
   if (!videoSeek || !video.duration || !Number.isFinite(video.duration)) return;
   videoSeek.min = "0";
@@ -567,8 +557,8 @@ function buildLabelButtons() {
     btn.type = "button";
     btn.className = "label-btn";
     btn.dataset.label = label.id;
-    btn.textContent = `${label.id} (${formatLabelKey(label.key)})`;
-    btn.title = label.display;
+    btn.textContent = `${label.display.toUpperCase()} (${formatLabelKey(label.key)})`;
+    btn.title = `${label.display} — ${label.id}`;
     btn.addEventListener("click", () => annotate(label.id));
     labelButtons.appendChild(btn);
   });
@@ -655,6 +645,30 @@ function sameVideoUrl(currentSrc, nextUrl) {
   }
 }
 
+function waitForVideoMetadata(url) {
+  return new Promise((resolve, reject) => {
+    if (!sameVideoUrl(video.src, url)) {
+      video.preload = "auto";
+      video.src = url;
+      video.load();
+    }
+    if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+      resolve();
+      return;
+    }
+    const onReady = () => {
+      video.removeEventListener("error", onError);
+      resolve();
+    };
+    const onError = () => {
+      video.removeEventListener("loadedmetadata", onReady);
+      reject(new Error(`Video failed to load: ${url}`));
+    };
+    video.addEventListener("loadedmetadata", onReady, { once: true });
+    video.addEventListener("error", onError, { once: true });
+  });
+}
+
 function waitForVideoAtOffset(offset) {
   const target = Math.max(0, offset || 0);
   const atTarget = () =>
@@ -716,18 +730,13 @@ async function startAnnotatorJob(data) {
   const total = data.annotator_total ?? 1;
   const prefix = IS_TEST_PAGE ? "Test round" : "Job active";
   if (jobInfo) {
-    jobInfo.textContent = `${prefix} · full video from server · start ${jobStartOffset.toFixed(1)}s · ${index}/${total}`;
+    jobInfo.textContent = `${prefix} · start ${jobStartOffset.toFixed(1)}s · ${index}/${total}`;
   }
 
-  prefetchVideoUrl(url);
   showVideoReady();
   video.pause();
   try {
-    if (!sameVideoUrl(video.src, url)) {
-      video.preload = "auto";
-      video.src = url;
-      video.load();
-    }
+    await waitForVideoMetadata(url);
     const offset = jobStartOffset;
     await waitForVideoAtOffset(offset);
     updateTimelineSeekRange();
@@ -1037,7 +1046,7 @@ function renderVideoList(videos) {
 async function loadReviewerVideo(item, btn) {
   videoList.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
   btn.classList.add("active");
-  reviewerVideo.src = item.video_file;
+  reviewerVideo.src = item.video_url || item.video_file;
   reviewerMeta.textContent = item.video_url || item.video_key;
   try {
     const res = await apiFetch(item.annotations_file);
