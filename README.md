@@ -5,8 +5,8 @@ API and web UI for crowd-sourced soccer event annotation on short video clips.
 ## Features
 
 - **POST `/api/annotate`** — send a public `video_url`; after 22 seconds returns merged JSON `{ "events": [{ "time_sec", "label" }, ...] }`
-- **Direct playback** — annotators load the public video URL in the browser (no server-side hosting during jobs)
-- **Multi-annotator sync** — each user plays their slice of a 30s window from the same source URL
+- **Server-hosted video** — each job downloads the source URL to `data/videos/`, then streams the file to annotators over WebSocket before the job starts
+- **Multi-annotator sync** — each user plays their slice of a 30s window from the same cached file
 - **Cached responses** — repeat requests for the same URL wait 10–15s, then return stored JSON
 - **Web UI** — annotator, practice test (`/app/test`), or reviewer
 
@@ -77,7 +77,7 @@ Requires at least one connected annotator (open `/app` and choose **Annotator**)
 
 - `data/annotations/{key}.json` — event JSON
 - `data/annotations/{key}.meta.json` — source URL metadata
-- `data/videos/{key}.mp4` — optional local copy for reviewer fallback
+- `data/videos/{key}.mp4` — downloaded copy served to annotators and reviewers
 
 ## Production
 

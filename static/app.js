@@ -95,6 +95,9 @@ let testNextDeadline = null;
 let pendingTestJob = null;
 let nextTestRoundAtSec = null;
 let loadedVideoJobId = null;
+const videoBlobUrls = new Map();
+let pendingVideoTransfer = null;
+const videoTransferWaiters = new Map();
 
 function wsUrl() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -355,6 +358,91 @@ function stripVideoUrlHash(url) {
   return i >= 0 ? url.slice(0, i) : url;
 }
 
+function revokeJobVideoUrl(jobId) {
+  const old = videoBlobUrls.get(jobId);
+  if (old) {
+    URL.revokeObjectURL(old);
+    videoBlobUrls.delete(jobId);
+  }
+}
+
+function resolvePlaybackUrl(data) {
+  const jobId = data.job_id;
+  if (jobId && videoBlobUrls.has(jobId)) {
+    return videoBlobUrls.get(jobId);
+  }
+  if (data.video_file) {
+    return new URL(data.video_file, location.origin).href;
+  }
+  if (data.video_url) {
+    return data.video_url;
+  }
+  return null;
+}
+
+function waitForVideoTransfer(jobId, timeoutMs = 120_000) {
+  if (videoBlobUrls.has(jobId)) {
+    return Promise.resolve(videoBlobUrls.get(jobId));
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const waiters = videoTransferWaiters.get(jobId) || [];
+      videoTransferWaiters.set(
+        jobId,
+        waiters.filter((w) => w.resolve !== resolve)
+      );
+      reject(new Error("Video transfer timed out"));
+    }, timeoutMs);
+    const finish = (url) => {
+      clearTimeout(timer);
+      resolve(url);
+    };
+    const fail = (err) => {
+      clearTimeout(timer);
+      reject(err);
+    };
+    const waiters = videoTransferWaiters.get(jobId) || [];
+    waiters.push({ resolve: finish, reject: fail });
+    videoTransferWaiters.set(jobId, waiters);
+  });
+}
+
+function handleVideoTransferStart(data) {
+  pendingVideoTransfer = {
+    job_id: data.job_id,
+    video_key: data.video_key,
+    size: data.size || 0,
+    mime: data.mime || "video/mp4",
+    chunks: [],
+    received: 0,
+  };
+}
+
+function handleVideoTransferEnd(data) {
+  const transfer = pendingVideoTransfer;
+  if (!transfer || transfer.job_id !== data.job_id) return;
+
+  const blob = new Blob(transfer.chunks, { type: transfer.mime });
+  revokeJobVideoUrl(data.job_id);
+  const url = URL.createObjectURL(blob);
+  videoBlobUrls.set(data.job_id, url);
+  pendingVideoTransfer = null;
+
+  const waiters = videoTransferWaiters.get(data.job_id) || [];
+  videoTransferWaiters.delete(data.job_id);
+  for (const w of waiters) {
+    w.resolve(url);
+  }
+}
+
+function handleWsBinary(data) {
+  const transfer = pendingVideoTransfer;
+  if (!transfer) return;
+  const chunk = new Uint8Array(data);
+  transfer.chunks.push(chunk);
+  transfer.received += chunk.byteLength;
+}
+
 function connectWebSocket() {
   return new Promise((resolve, reject) => {
     if (ws && ws.readyState === WebSocket.OPEN && wsAuthed) {
@@ -364,6 +452,7 @@ function connectWebSocket() {
     wsAuthed = false;
     wsConnectResolve = resolve;
     ws = new WebSocket(wsUrl());
+    ws.binaryType = "arraybuffer";
     ws.onopen = () => {
       wsAuthed = true;
       if (wsConnectResolve) {
@@ -375,7 +464,19 @@ function connectWebSocket() {
       wsConnectResolve = null;
       reject(new Error("WebSocket connection failed"));
     };
-    ws.onmessage = (ev) => handleMessage(JSON.parse(ev.data));
+    ws.onmessage = (ev) => {
+      if (typeof ev.data === "string") {
+        handleMessage(JSON.parse(ev.data));
+        return;
+      }
+      if (ev.data instanceof ArrayBuffer) {
+        handleWsBinary(ev.data);
+      } else if (ev.data instanceof Blob) {
+        ev.data.arrayBuffer().then(handleWsBinary).catch((err) => {
+          console.error("Video chunk error", err);
+        });
+      }
+    };
     ws.onclose = () => {
       wsAuthed = false;
       if (roleStatus) roleStatus.textContent = "Disconnected. Refresh the page.";
@@ -706,7 +807,14 @@ function waitForVideoAtOffset(offset) {
 }
 
 async function startAnnotatorJob(data) {
-  const url = data.video_url;
+  let url = resolvePlaybackUrl(data);
+  if (!url && data.job_id) {
+    try {
+      url = await waitForVideoTransfer(data.job_id);
+    } catch (err) {
+      console.error(err);
+    }
+  }
   if (!url) return;
 
   if (data.job_id === loadedVideoJobId && sameVideoUrl(video.src, url)) {
@@ -863,6 +971,12 @@ function handleMessage(data) {
       if (role === "reviewer") {
         send({ type: "list_videos" });
       }
+      break;
+    case "video_transfer_start":
+      handleVideoTransferStart(data);
+      break;
+    case "video_transfer_end":
+      handleVideoTransferEnd(data);
       break;
     default:
       break;
@@ -1046,7 +1160,9 @@ function renderVideoList(videos) {
 async function loadReviewerVideo(item, btn) {
   videoList.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
   btn.classList.add("active");
-  reviewerVideo.src = item.video_url || item.video_file;
+  reviewerVideo.src = item.video_file
+    ? new URL(item.video_file, location.origin).href
+    : item.video_url;
   reviewerMeta.textContent = item.video_url || item.video_key;
   try {
     const res = await apiFetch(item.annotations_file);
