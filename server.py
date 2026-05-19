@@ -509,9 +509,7 @@ async def split_video_segment(src: Path, dest: Path, start: float, duration: flo
         "-ss", str(start),
         "-i", str(src),
         "-t", str(duration),
-        "-c:v", "libx264",
-        "-preset", "veryfast",
-        "-c:a", "aac",
+        "-c", "copy",
         str(dest),
     ]
 
