@@ -6,7 +6,7 @@ API and web UI for crowd-sourced soccer event annotation on short video clips.
 
 - **POST `/api/annotate`** — send a `video_url`; after 22 seconds returns merged JSON `{ "events": [{ "time_sec", "label" }, ...] }`
 - **Cached videos** — repeat requests for the same URL wait a random **10–15 seconds**, then return stored JSON
-- **Multi-annotator sync** — annotators split a 30s window; user *y* starts at `30/x * (y-1)` seconds
+- **Multi-annotator sync** — server hosts the full downloaded video; each annotator plays from their offset in the 30s window
 - **Web UI** — annotator (auto-play, 15 labels, shortcuts, overlay) or reviewer (browse saved results)
 
 ## Setup
