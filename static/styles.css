@@ -1189,13 +1189,45 @@ body.page-review #reviewer-video {
   letter-spacing: 0.06em;
 }
 
-#events-list li {
+#events-list li,
+#events-list .event-row {
   border-left-width: 4px;
   border-left-style: solid;
 }
 
-#events-list .event-item.event-other {
-  opacity: 0.92;
+#events-list .event-row {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+}
+
+#events-list .event-goto {
+  flex: 1;
+  min-width: 0;
+}
+
+#events-list .event-delete {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.1rem;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-left: 1px solid #2a3a52;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 0;
+}
+
+#events-list .event-delete:hover {
+  background: rgba(220, 80, 80, 0.2);
+  color: #ff9a9a;
+}
+
+#events-list .event-delete-icon {
+  display: block;
 }
 
 .ctrl-btn {
@@ -1294,7 +1326,6 @@ body.page-review #reviewer-video {
 }
 
 #events-list .event-item {
-  width: 100%;
   text-align: left;
   padding: 0.45rem 0.55rem;
   background: transparent;
@@ -1307,9 +1338,13 @@ body.page-review #reviewer-video {
   line-height: 1.35;
 }
 
-#events-list .event-item:hover {
+#events-list .event-goto:hover {
   background: var(--surface2);
-  color: #ff9a9a;
+}
+
+body.annotations-locked .label-btn {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .reviewer-bar {

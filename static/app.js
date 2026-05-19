@@ -113,6 +113,9 @@ let pendingTestJob = null;
 let nextTestRoundAtSec = null;
 let loadedVideoJobId = null;
 let videoPollAbort = null;
+let annotationsLocked = false;
+
+const EVENT_DELETE_ICON = `<svg class="event-delete-icon" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M6 7h12v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V7zm3-4h6l1 1h4v2H4V4h4l1-1zM9 9v9h2V9H9zm4 0v9h2V9h-2z"/></svg>`;
 
 function labelDisplayName(labelId) {
   return LABELS.find((l) => l.id === labelId)?.display ?? labelId;
@@ -199,6 +202,42 @@ function isInAnnotationRange(globalT) {
     globalT >= jobCoreGlobalStart - 0.001 &&
     globalT <= jobCoreGlobalEnd + 0.001
   );
+}
+
+function canEditAnnotations() {
+  return !!currentJobId && !annotationsLocked && !!video.src;
+}
+
+function setAnnotationsLocked(locked) {
+  annotationsLocked = locked;
+  document.body.classList.toggle("annotations-locked", locked);
+  if (labelButtons) {
+    labelButtons.querySelectorAll(".label-btn").forEach((btn) => {
+      btn.disabled = locked;
+    });
+  }
+  renderSessionEvents();
+}
+
+function roundTimeSec(timeSec) {
+  return Math.round(Number(timeSec) * 100) / 100;
+}
+
+function findMyEventAtTime(timeSec) {
+  const t = roundTimeSec(timeSec);
+  return jobEvents.find(
+    (e) =>
+      e.participant_id === myParticipantId &&
+      roundTimeSec(e.time_sec) === t
+  );
+}
+
+function seekToEvent(event) {
+  if (!video.src || !event) return;
+  video.pause();
+  video.currentTime = localTimeFromGlobal(event.time_sec);
+  updateVideoHud();
+  updatePlayPauseButton();
 }
 
 function setStatusMessage(text, target = roleStatus) {
@@ -382,6 +421,7 @@ function startApiCountdownSecondsLeft(secondsLeft) {
   if (IS_PRACTICE_PAGE) stopTestNextCountdown(true);
   apiCountdown.classList.remove("hidden", "done");
   apiCountdown.classList.add("active");
+  setAnnotationsLocked(false);
   const totalSec = Math.max(0, Number(secondsLeft) || 0);
   countdownDeadline = performance.now() + totalSec * 1000;
 
@@ -398,6 +438,7 @@ function startApiCountdownSecondsLeft(secondsLeft) {
       apiCountdown.classList.remove("urgent", "critical", "active");
       apiCountdown.classList.add("done");
       countdownRafId = null;
+      setAnnotationsLocked(true);
       if (IS_PRACTICE_PAGE) {
         currentJobId = null;
         loadedVideoJobId = null;
@@ -933,6 +974,7 @@ function showOverlay(labelId, frame) {
 
 function renderSessionEvents() {
   if (!eventsList) return;
+  const editable = canEditAnnotations();
   eventsList.innerHTML = jobEvents
     .slice()
     .sort((a, b) => a.time_sec - b.time_sec)
@@ -942,15 +984,19 @@ function renderSessionEvents() {
       const who = mine ? "you" : `#${e.participant_id}`;
       const color = participantColor(e.participant_id);
       const style = `border-left: 4px solid ${color}`;
-      if (mine) {
-        return `<li style="${style}"><button type="button" class="event-item" data-event-id="${e.id}" title="Click to remove">frame ${e.frame} · ${e.time_sec.toFixed(2)}s — ${labelName} (${who})</button></li>`;
-      }
-      return `<li style="${style}"><span class="event-item event-other">frame ${e.frame} · ${e.time_sec.toFixed(2)}s — ${labelName} (${who})</span></li>`;
+      const text = `frame ${e.frame} · ${e.time_sec.toFixed(2)}s — ${labelName} (${who})`;
+      const gotoBtn = `<button type="button" class="event-item event-goto" data-event-id="${e.id}" data-time-sec="${e.time_sec}" title="Go to this frame">${text}</button>`;
+      const deleteBtn =
+        mine && editable
+          ? `<button type="button" class="event-delete" data-event-id="${e.id}" title="Delete annotation" aria-label="Delete annotation">${EVENT_DELETE_ICON}</button>`
+          : "";
+      return `<li class="event-row${mine ? " event-row-mine" : ""}" style="${style}">${gotoBtn}${deleteBtn}</li>`;
     })
     .join("");
 }
 
 function removeSessionEvent(eventId) {
+  if (!canEditAnnotations()) return;
   const idx = jobEvents.findIndex(
     (e) => e.id === eventId && e.participant_id === myParticipantId
   );
@@ -971,10 +1017,15 @@ function removeSessionEvent(eventId) {
 }
 
 function annotate(labelId) {
-  if (!currentJobId || !video.src) return;
+  if (!canEditAnnotations()) return;
   const time_sec = globalTimeFromVideo();
   if (!isInAnnotationRange(time_sec)) return;
   const frame = timeToFrame(time_sec);
+  const existing = findMyEventAtTime(time_sec);
+  if (existing) {
+    if (existing.label === labelId) return;
+    removeSessionEvent(existing.id);
+  }
   showOverlay(labelId, frame);
   send({
     type: "annotation",
@@ -1079,6 +1130,7 @@ async function startAnnotatorJob(data) {
   stopVideoPoll();
   currentJobId = data.job_id;
   loadedVideoJobId = data.job_id;
+  setAnnotationsLocked(false);
   jobEvents = [];
   sessionEvents = [];
   nextEventId = 0;
@@ -1463,10 +1515,18 @@ videoTimeline?.addEventListener("mouseout", (e) => {
 });
 
 eventsList?.addEventListener("click", (e) => {
-  const btn = e.target.closest(".event-item");
-  if (!btn) return;
-  const eventId = Number(btn.dataset.eventId);
-  if (Number.isFinite(eventId)) removeSessionEvent(eventId);
+  const deleteBtn = e.target.closest(".event-delete");
+  if (deleteBtn) {
+    e.preventDefault();
+    const eventId = Number(deleteBtn.dataset.eventId);
+    if (Number.isFinite(eventId)) removeSessionEvent(eventId);
+    return;
+  }
+  const gotoBtn = e.target.closest(".event-goto");
+  if (!gotoBtn) return;
+  const eventId = Number(gotoBtn.dataset.eventId);
+  const ev = jobEvents.find((x) => x.id === eventId);
+  if (ev) seekToEvent(ev);
 });
 
 if (video) {
