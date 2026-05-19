@@ -1,4 +1,6 @@
 const DEFAULT_FPS = 25;
+const ARROW_HOLD_DELAY_MS = 60;
+const ARROW_HOLD_INTERVAL_MS = 28;
 const API_RESPONSE_SEC = 22;
 const VIDEO_POLL_INTERVAL_MS = 2000;
 const PAGE = document.body.dataset.page || "";
@@ -800,8 +802,8 @@ function startArrowHold(dir) {
   arrowHoldDir = dir;
   arrowHoldDelay = setTimeout(() => {
     arrowHoldDelay = null;
-    arrowHoldTimer = setInterval(() => stepFrame(dir), 70);
-  }, 200);
+    arrowHoldTimer = setInterval(() => stepFrame(dir), ARROW_HOLD_INTERVAL_MS);
+  }, ARROW_HOLD_DELAY_MS);
 }
 
 function stopArrowHold() {
