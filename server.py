@@ -120,9 +120,9 @@ class TestJobState:
     job_id: str
     video_key: str
     job_dir: Path
-    hosted_video: Path | None = None
     segment_total: int
     rank_by_participant_id: dict[int, int]
+    hosted_video: Path | None = None
 
 
 class AnnotateRequest(BaseModel):
