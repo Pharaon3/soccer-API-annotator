@@ -395,31 +395,38 @@ function stopVideoPoll() {
   }
 }
 
-async function waitForServerVideo(videoId, secondsLeft) {
+function waitForServerVideo(videoId) {
   stopVideoPoll();
-  const abort = { aborted: false };
-  videoPollAbort = abort;
-  const path = serverVideoApiPath(videoId);
-  const deadlineMs = performance.now() + Math.max(0, secondsLeft) * 1000;
 
-  while (!abort.aborted && performance.now() < deadlineMs) {
-    try {
-      const resp = await fetch(path, { method: "HEAD", cache: "no-store" });
-      if (resp.ok) {
-        videoPollAbort = null;
-        return new URL(path, location.origin).href;
-      }
-    } catch (err) {
-      console.debug("video poll", videoId, err);
-    }
-    const left = deadlineMs - performance.now();
-    if (left <= 0) break;
-    await new Promise((resolve) =>
-      setTimeout(resolve, Math.min(VIDEO_POLL_INTERVAL_MS, left))
-    );
-  }
-  videoPollAbort = null;
-  return null;
+  const path = serverVideoApiPath(videoId);
+
+  return new Promise((resolve) => {
+    const interval = setInterval(() => {
+      const controller = new AbortController();
+
+      const timeout = setTimeout(() => {
+        controller.abort(); // kill this API request after 5 seconds
+      }, 5000);
+
+      fetch(path, {
+        method: "GET",
+        cache: "no-store",
+        signal: controller.signal,
+      })
+        .then((resp) => {
+          clearTimeout(timeout);
+
+          if (resp.ok) {
+            clearInterval(interval);
+            videoPollAbort = null;
+            resolve(new URL(path, location.origin).href);
+          }
+        })
+        .catch(() => {
+          clearTimeout(timeout);
+        });
+    }, 2000);
+  });
 }
 
 function connectWebSocket() {
