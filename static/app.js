@@ -7,6 +7,7 @@ const API_CALL_INTERVAL_SEC = 3600;
 const API_NEXT_WARN_5_MIN_SEC = 5 * 60;
 const API_NEXT_WARN_1_MIN_SEC = 60;
 const VIDEO_POLL_INTERVAL_MS = 2000;
+const ANNOTATOR_POST_DEADLINE_KEEP_MS = 60 * 1000;
 const PRESENCE_IDLE_MS = 15 * 60 * 1000;
 const PRESENCE_ACTIVE_RECHECK_MS = 30 * 1000;
 const PAGE = document.body.dataset.page || "";
@@ -154,6 +155,8 @@ let videoFps = DEFAULT_FPS;
 let frameRafId = null;
 let countdownRafId = null;
 let countdownDeadline = null;
+let postDeadlineCleanupTimer = null;
+let pendingApiVideoId = null;
 let testNextRafId = null;
 let practiceMode = "sync";
 let testNextDeadline = null;
@@ -897,6 +900,13 @@ function startApiCountdownSecondsLeft(secondsLeft) {
         currentJobId = null;
         loadedVideoJobId = null;
         if (nextTestRoundAtSec) startTestNextCountdown(nextTestRoundAtSec);
+      } else if (IS_ANNOTATOR_PAGE && !IS_PRACTICE_PAGE) {
+        const finishedJobId = currentJobId;
+        clearPostDeadlineCleanupTimer();
+        postDeadlineCleanupTimer = setTimeout(() => {
+          if (!currentJobId || currentJobId !== finishedJobId) return;
+          clearAnnotatorVideo(true);
+        }, ANNOTATOR_POST_DEADLINE_KEEP_MS);
       }
       return;
     }
@@ -981,6 +991,23 @@ function hideAnnotatorIdleCountdown() {
   apiNextVideoCountdown.classList.add("hidden");
 }
 
+function clearPostDeadlineCleanupTimer() {
+  if (postDeadlineCleanupTimer) {
+    clearTimeout(postDeadlineCleanupTimer);
+    postDeadlineCleanupTimer = null;
+  }
+}
+
+function shouldShowNextChallengeTimer() {
+  return (
+    IS_ANNOTATOR_PAGE &&
+    role === "annotator" &&
+    !currentJobId &&
+    !pendingApiVideoId &&
+    !(pendingAnnotateJob && pendingAnnotateJob.api_pending)
+  );
+}
+
 function stopApiNextCountdown(hide = false) {
   if (apiNextRafId !== null) {
     cancelAnimationFrame(apiNextRafId);
@@ -998,10 +1025,15 @@ function stopApiNextCountdown(hide = false) {
 function showApiNextIdle() {
   if (!IS_ANNOTATOR_PAGE || !apiNextCountdown || !apiNextValue) return;
   stopApiNextCountdown();
-  apiNextCountdown.classList.remove("hidden");
+  const visible = shouldShowNextChallengeTimer();
+  apiNextCountdown.classList.toggle("hidden", !visible);
   apiNextCountdown.classList.add("active");
-  apiNextValue.textContent = "—";
-  showAnnotatorIdleCountdown("—");
+  if (visible) {
+    apiNextValue.textContent = "—";
+    showAnnotatorIdleCountdown("—");
+  } else {
+    hideAnnotatorIdleCountdown();
+  }
 }
 
 function startApiNextCountdown(durationSec = API_CALL_INTERVAL_SEC) {
@@ -1016,21 +1048,27 @@ function startApiNextCountdownAt(nextCallAtSec) {
   stopApiNextCountdown();
   apiNextWarned5Min = false;
   apiNextWarned1Min = false;
-  apiNextCountdown.classList.remove("hidden");
   apiNextCountdown.classList.add("active");
 
   const tick = () => {
+    const visible = shouldShowNextChallengeTimer();
+    apiNextCountdown.classList.toggle("hidden", !visible);
     const leftSec = Math.max(0, (targetMs - Date.now()) / 1000);
     if (leftSec <= 0) {
-      apiNextValue.textContent = "0:00";
+      if (visible) apiNextValue.textContent = "0:00";
       apiNextCountdown.classList.remove("urgent", "critical");
-      showAnnotatorIdleCountdown("0:00");
+      if (visible) showAnnotatorIdleCountdown("0:00");
+      else hideAnnotatorIdleCountdown();
       apiNextRafId = null;
       return;
     }
     const display = formatApiCountdown(leftSec);
-    apiNextValue.textContent = display;
-    showAnnotatorIdleCountdown(display);
+    if (visible) {
+      apiNextValue.textContent = display;
+      showAnnotatorIdleCountdown(display);
+    } else {
+      hideAnnotatorIdleCountdown();
+    }
     apiNextCountdown.classList.toggle("urgent", leftSec <= API_NEXT_WARN_5_MIN_SEC);
     apiNextCountdown.classList.toggle("critical", leftSec <= API_NEXT_WARN_1_MIN_SEC);
 
@@ -1078,10 +1116,13 @@ function handleApiCallStarted(data) {
     return;
   }
   if (data.video_id && role === "annotator") {
+    pendingApiVideoId = data.video_id;
     showConnectionStatus(`API job started: ${data.video_id}`, true);
     if (jobInfo && !currentJobId) {
       jobInfo.textContent = `API job started · ${data.video_id} · waiting for video…`;
     }
+    hideAnnotatorIdleCountdown();
+    apiNextCountdown?.classList.add("hidden");
     showVideoReady();
   }
 }
@@ -1574,6 +1615,21 @@ function stopVideoHudLoop() {
   }
 }
 
+function clearAnnotatorVideo(showNextTimer = false) {
+  clearPostDeadlineCleanupTimer();
+  stopVideoPoll();
+  stopVideoHudLoop();
+  hideVideoReady();
+  video.pause();
+  video.removeAttribute("src");
+  updatePlayPauseButton();
+  updateVideoHud();
+  currentJobId = null;
+  loadedVideoJobId = null;
+  pendingApiVideoId = null;
+  if (showNextTimer) showApiNextIdle();
+}
+
 function togglePlayPause() {
   if (!video.src) return;
   if (video.paused) {
@@ -1630,18 +1686,19 @@ function showOverlay(labelId, frame) {
 function renderSessionEvents() {
   if (!eventsList) return;
   const editable = canEditAnnotations();
+  const minePid = myParticipantId ?? 0;
   eventsList.innerHTML = jobEvents
     .slice()
+    .filter((e) => e.participant_id === minePid)
     .sort((a, b) => a.time_sec - b.time_sec)
     .map((e) => {
       const labelName = labelDisplayName(e.label);
       const mine = e.participant_id === myParticipantId;
-      const who = mine ? "you" : `#${e.participant_id}`;
       const annotatorColor = participantColor(e.participant_id);
       const eventColor = LABEL_COLORS[e.label] || "#94a3b8";
       const style = `border-left: 4px solid ${annotatorColor}; background: color-mix(in srgb, ${eventColor} 20%, transparent)`;
       const selected = mine && e.id === selectedEventId;
-      const text = `frame ${e.frame} · ${e.time_sec.toFixed(2)}s — ${labelName} (${who})`;
+      const text = `${e.frame} - ${labelName}`;
       const gotoTitle = mine && editable
         ? selected
           ? "Selected — click a label to change it"
@@ -1821,6 +1878,8 @@ async function startAnnotatorJob(data) {
   }
 
   stopVideoPoll();
+  clearPostDeadlineCleanupTimer();
+  pendingApiVideoId = null;
   hideAnnotatorIdleCountdown();
   currentJobId = data.job_id;
   loadedVideoJobId = data.job_id;
@@ -1897,21 +1956,13 @@ function handleDuplicateCacheHit(data) {
   showConnectionStatus(msg, false);
   setStatusMessage(msg, jobInfo);
   stopApiCountdown(true);
-  stopVideoPoll();
-  stopVideoHudLoop();
   setAnnotationsLocked(true);
-  currentJobId = null;
-  loadedVideoJobId = null;
   jobEvents = [];
   sessionEvents = [];
   selectedEventId = null;
   renderSessionEvents();
   renderTimelineMarkers();
-  hideVideoReady();
-  video.pause();
-  video.removeAttribute("src");
-  updatePlayPauseButton();
-  updateVideoHud();
+  clearAnnotatorVideo(false);
   showApiNextIdle();
 }
 
@@ -1942,20 +1993,12 @@ function buildPrivatePracticeJob(video) {
 
 function resetPracticeJob() {
   stopApiCountdown(true);
-  stopVideoPoll();
-  stopVideoHudLoop();
-  currentJobId = null;
-  loadedVideoJobId = null;
   jobEvents = [];
   sessionEvents = [];
   selectedEventId = null;
   renderSessionEvents();
   renderTimelineMarkers();
-  hideVideoReady();
-  video.pause();
-  video.removeAttribute("src");
-  updatePlayPauseButton();
-  updateVideoHud();
+  clearAnnotatorVideo(false);
   if (IS_ANNOTATOR_PAGE && !IS_PRACTICE_PAGE) showApiNextIdle();
 }
 
@@ -2104,7 +2147,12 @@ function handleMessage(data) {
         }
         showScreen(annotatorScreen);
         requestNotificationPermission();
-        showApiNextIdle();
+        if (!(pendingAnnotateJob && pendingAnnotateJob.api_pending) && !pendingApiVideoId) {
+          showApiNextIdle();
+        } else {
+          hideAnnotatorIdleCountdown();
+          apiNextCountdown?.classList.add("hidden");
+        }
         if (pendingAnnotateJob && !pendingAnnotateJob.api_pending) {
           const job = applyRoleAckToJob(pendingAnnotateJob, data);
           pendingAnnotateJob = null;
@@ -2122,9 +2170,7 @@ function handleMessage(data) {
         if (data.videos) renderVideoList(data.videos);
         stopApiCountdown(true);
         showScreen(reviewerScreen);
-        stopVideoHudLoop();
-        video.pause();
-        video.removeAttribute("src");
+        clearAnnotatorVideo(false);
         ensureWorkspaceOnline();
       }
       if (data.role === "annotator" || data.role === "test") {
@@ -2208,6 +2254,11 @@ async function switchToRole(selectedRole) {
   hideRoleModal();
   if (tracksPresenceRole()) {
     stopPresenceTracking();
+  }
+  if (selectedRole !== "annotator" && selectedRole !== "test") {
+    clearAnnotatorVideo(false);
+    hideAnnotatorIdleCountdown();
+    apiNextCountdown?.classList.add("hidden");
   }
   role = selectedRole;
   send({ type: "set_role", role: selectedRole });
