@@ -29,17 +29,40 @@
     <div class="reviewer-layout">
       <aside class="video-list-panel">
         <h2>Saved videos</h2>
-        <div class="video-list-search">
-          <label for="video-date-filter" class="video-list-search-label">Search by date</label>
-          <div class="video-list-search-row">
-            <input type="date" id="video-date-filter" class="video-list-search-input" />
-            <button type="button" id="btn-clear-date-filter" class="small-btn">Clear</button>
+        <div class="date-picker">
+          <span class="date-picker-label">Jump to date</span>
+          <button type="button" id="btn-date-picker-open" class="date-picker-trigger" aria-haspopup="dialog" aria-controls="video-date-filter">
+            <span class="date-picker-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M7 2a1 1 0 0 1 1 1v1h8V3a1 1 0 1 1 2 0v1h1.5A2.5 2.5 0 0 1 22 6.5v13A2.5 2.5 0 0 1 19.5 22h-15A2.5 2.5 0 0 1 2 19.5v-13A2.5 2.5 0 0 1 4.5 4H6V3a1 1 0 0 1 1-1zm13 9H4v8.5c0 .28.22.5.5.5h15c.28 0 .5-.22.5-.5V11zM6 6h-.5a.5.5 0 0 0-.5.5V9h14V6.5a.5.5 0 0 0-.5-.5H18v1a1 1 0 1 1-2 0V6H8v1a1 1 0 0 1-2 0V6z"/></svg>
+            </span>
+            <span id="video-date-filter-label" class="date-picker-value">All dates</span>
+            <span class="date-picker-chevron" aria-hidden="true">▾</span>
+          </button>
+          <input type="date" id="video-date-filter" class="date-picker-input" tabindex="-1" aria-hidden="true" />
+          <div class="date-picker-quick">
+            <button type="button" class="date-picker-chip" data-date-quick="today">Today</button>
+            <button type="button" class="date-picker-chip" data-date-quick="yesterday">Yesterday</button>
+            <button type="button" id="btn-clear-date-filter" class="date-picker-chip date-picker-chip-muted">Clear</button>
           </div>
         </div>
         <ul id="video-list" class="video-list-grouped"></ul>
       </aside>
       <section class="reviewer-main">
-        <video id="reviewer-video" controls playsinline></video>
+        <div class="board-video-wrap">
+          <video id="reviewer-video" playsinline preload="auto"></video>
+        </div>
+        <div class="board-video-controller video-controller">
+          <div class="video-controller-controls">
+            <button type="button" id="board-btn-play-pause" class="ctrl-btn" title="Play / Pause" aria-label="Play / Pause">▶</button>
+            <span id="board-video-time-display" class="time-display">0:00.00</span>
+            <span id="board-video-frame-display" class="frame-display">frame 0</span>
+          </div>
+          <div class="video-timeline" id="board-video-timeline">
+            <div id="board-timeline-track" class="timeline-track" aria-hidden="true"></div>
+            <input type="range" id="board-video-seek" class="video-seek" min="0" max="30" step="0.01" value="0" />
+            <div id="board-timeline-markers" class="timeline-markers"></div>
+          </div>
+        </div>
         <div id="reviewer-meta" class="reviewer-meta"></div>
       </section>
       <aside class="reviewer-events-sidebar">

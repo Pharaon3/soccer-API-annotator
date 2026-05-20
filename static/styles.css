@@ -899,16 +899,45 @@ body.page-home {
   flex-shrink: 0;
 }
 
+body.page-board .reviewer-main,
+body.page-review .reviewer-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-height: 0;
+}
+
+body.page-board .board-video-wrap,
+body.page-review .board-video-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #000;
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 body.page-board #reviewer-video,
 body.page-review #reviewer-video {
   width: 100%;
-  flex: 1 1 auto;
-  min-height: 0;
-  max-height: none;
+  height: 100%;
+  max-height: 100%;
   background: #000;
   border-radius: 10px;
   display: block;
   object-fit: contain;
+}
+
+body.page-board #reviewer-video::-webkit-media-controls,
+body.page-review #reviewer-video::-webkit-media-controls {
+  display: none !important;
+}
+
+body.page-board .board-video-controller,
+body.page-review .board-video-controller {
+  flex-shrink: 0;
 }
 
 .video-aspect .event-overlay {
@@ -1402,7 +1431,7 @@ body.annotations-locked .label-btn {
   margin-bottom: 0.35rem;
 }
 
-#video-list button {
+#video-list .video-card-btn {
   width: 100%;
   text-align: left;
   padding: 0.65rem 0.75rem;
@@ -1415,37 +1444,102 @@ body.annotations-locked .label-btn {
   line-height: 1.35;
 }
 
-#video-list button:hover,
-#video-list button.active {
+#video-list .video-card-btn:hover,
+#video-list .video-card-btn.active {
   border-color: var(--accent);
   background: #2a3d58;
 }
 
-.video-list-search {
-  margin-bottom: 0.85rem;
-}
-
-.video-list-search-label {
-  display: block;
-  font-size: 0.75rem;
-  color: var(--muted);
-  margin-bottom: 0.35rem;
-}
-
-.video-list-search-row {
-  display: flex;
-  gap: 0.35rem;
-}
-
-.video-list-search-input {
-  flex: 1;
-  min-width: 0;
-  padding: 0.4rem 0.5rem;
-  border-radius: 8px;
+.date-picker {
+  position: relative;
+  margin-bottom: 0.9rem;
+  padding: 0.7rem;
+  border-radius: 12px;
   border: 1px solid #2a3a52;
-  background: var(--surface2);
+  background: linear-gradient(180deg, #1a2433 0%, #141c28 100%);
+}
+
+.date-picker-label {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.45rem;
+}
+
+.date-picker-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.6rem 0.7rem;
+  border-radius: 10px;
+  border: 1px solid #334155;
+  background: #0f172a;
   color: var(--text);
-  font-size: 0.82rem;
+  cursor: pointer;
+  font-size: 0.86rem;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.date-picker-trigger:hover,
+.date-picker-trigger:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(61, 139, 253, 0.2);
+  outline: none;
+}
+
+.date-picker-icon {
+  display: flex;
+  color: var(--accent);
+}
+
+.date-picker-value {
+  flex: 1;
+  text-align: left;
+  font-weight: 600;
+}
+
+.date-picker-chevron {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.date-picker-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.date-picker-quick {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.55rem;
+}
+
+.date-picker-chip {
+  padding: 0.28rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid #334155;
+  background: #1e293b;
+  color: #cbd5e1;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.date-picker-chip:hover {
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.date-picker-chip-muted {
+  color: var(--muted);
 }
 
 .video-list-grouped {
@@ -1455,8 +1549,16 @@ body.annotations-locked .label-btn {
 }
 
 .video-list-date-group {
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.65rem;
   list-style: none;
+  border: 1px solid #2a3a52;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #121a28;
+}
+
+.video-list-date-group.is-expanded {
+  border-color: #3d5a80;
 }
 
 .video-list-date-toggle {
@@ -1464,19 +1566,19 @@ body.annotations-locked .label-btn {
   display: flex;
   align-items: center;
   gap: 0.45rem;
-  padding: 0.55rem 0.6rem;
-  border: 1px solid #2a3a52;
-  border-radius: 8px;
+  padding: 0.65rem 0.7rem;
+  border: none;
+  border-radius: 0;
   background: #1a2433;
-  color: var(--text);
-  font-size: 0.78rem;
-  font-weight: 600;
+  color: #e2e8f0;
+  font-size: 0.8rem;
+  font-weight: 700;
   cursor: pointer;
   text-align: left;
 }
 
 .video-list-date-toggle:hover {
-  border-color: var(--accent);
+  background: #223044;
 }
 
 .video-list-date-chevron {
@@ -1502,8 +1604,10 @@ body.annotations-locked .label-btn {
 
 .video-list-date-items {
   list-style: none;
-  margin: 0.35rem 0 0;
-  padding: 0 0 0 0.35rem;
+  margin: 0;
+  padding: 0.45rem 0.45rem 0.5rem;
+  border-top: 1px solid #2a3a52;
+  background: #0f1520;
 }
 
 .video-list-date-items.collapsed {

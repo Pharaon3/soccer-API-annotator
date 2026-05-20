@@ -43,10 +43,25 @@ const videoList = document.getElementById("video-list");
 const reviewerEvents = document.getElementById("reviewer-events");
 const reviewerMeta = document.getElementById("reviewer-meta");
 const videoDateFilter = document.getElementById("video-date-filter");
+const videoDateFilterLabel = document.getElementById("video-date-filter-label");
 const btnClearDateFilter = document.getElementById("btn-clear-date-filter");
+const btnDatePickerOpen = document.getElementById("btn-date-picker-open");
+const boardVideoSeek = document.getElementById("board-video-seek");
+const boardTimelineMarkers = document.getElementById("board-timeline-markers");
+const boardVideoTimeline = document.getElementById("board-video-timeline");
+const boardTimelineTrack = document.getElementById("board-timeline-track");
+const boardBtnPlayPause = document.getElementById("board-btn-play-pause");
+const boardVideoTimeDisplay = document.getElementById("board-video-time-display");
+const boardVideoFrameDisplay = document.getElementById("board-video-frame-display");
 
 let boardVideosCache = [];
 const boardDateExpandState = new Map();
+let boardEvents = [];
+let boardLabelers = {};
+let boardWindowSec = 30;
+let boardSeekSyncing = false;
+let boardFrameRafId = null;
+let boardTimelineTooltip = null;
 const btnPlayPause = document.getElementById("btn-play-pause");
 const videoTimeDisplay = document.getElementById("video-time-display");
 const videoFrameDisplay = document.getElementById("video-frame-display");
@@ -151,7 +166,11 @@ function participantColor(participantId) {
 }
 
 function usesGroupedVideoList() {
-  return !!videoDateFilter;
+  return IS_BOARD_PAGE || PAGE === "review" || !!videoDateFilter;
+}
+
+function hasBoardTimeline() {
+  return !!boardVideoSeek && !!reviewerVideo;
 }
 
 function dateKeyFromSavedAt(savedAt) {
@@ -221,9 +240,55 @@ function formatLabelerList(labelerNames) {
   return labelerNames.join(", ");
 }
 
+function formatDateFilterLabel(dateKey) {
+  if (!dateKey) return "All dates";
+  if (isTodayDateKey(dateKey)) return "Today";
+  const [y, m, d] = dateKey.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  return dt.toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
+function updateDateFilterLabel() {
+  if (!videoDateFilterLabel) return;
+  videoDateFilterLabel.textContent = formatDateFilterLabel(videoDateFilter?.value || "");
+}
+
+function yesterdayDateKey() {
+  const today = new Date();
+  const yesterday = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate() - 1
+  );
+  return dateKeyFromSavedAt(yesterday.getTime() / 1000);
+}
+
+function setVideoDateFilter(dateKey) {
+  if (!videoDateFilter) return;
+  videoDateFilter.value = dateKey || "";
+  updateDateFilterLabel();
+  renderVideoList(boardVideosCache);
+}
+
+function openDatePicker() {
+  if (!videoDateFilter) return;
+  if (typeof videoDateFilter.showPicker === "function") {
+    videoDateFilter.showPicker();
+    return;
+  }
+  videoDateFilter.focus();
+  videoDateFilter.click();
+}
+
 function createVideoListButton(video, onSelect) {
   const btn = document.createElement("button");
   btn.type = "button";
+  btn.className = "video-card-btn";
   const time = formatSavedTime(video.saved_at);
   const labelers = formatLabelerList(video.labeler_names);
   btn.innerHTML = `<strong class="video-list-id">${video.video_id}</strong><span class="video-list-meta">${video.event_count} events · ${time}</span><span class="video-list-labelers">${labelers}</span>`;
@@ -1729,6 +1794,7 @@ async function bootApp() {
 
   if (IS_BOARD_PAGE) {
     bindReviewHandlers();
+    updateDateFilterLabel();
     document.body.classList.add("no-scroll");
     showScreen(reviewerScreen);
     await enterRole("reviewer");
@@ -1748,12 +1814,20 @@ function bindReviewHandlers() {
     send({ type: "list_videos" });
   });
   videoDateFilter?.addEventListener("change", () => {
-    renderVideoList(boardVideosCache);
+    setVideoDateFilter(videoDateFilter.value);
   });
   btnClearDateFilter?.addEventListener("click", () => {
-    if (videoDateFilter) videoDateFilter.value = "";
-    renderVideoList(boardVideosCache);
+    setVideoDateFilter("");
   });
+  btnDatePickerOpen?.addEventListener("click", openDatePicker);
+  document.querySelectorAll("[data-date-quick]").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      const quick = chip.dataset.dateQuick;
+      if (quick === "today") setVideoDateFilter(todayDateKey());
+      else if (quick === "yesterday") setVideoDateFilter(yesterdayDateKey());
+    });
+  });
+  bindBoardPlayerHandlers();
 }
 
 bootApp();
@@ -1817,9 +1891,183 @@ if (video) {
   });
 }
 
+function updateBoardPlayPauseButton() {
+  if (!boardBtnPlayPause || !reviewerVideo) return;
+  boardBtnPlayPause.textContent = reviewerVideo.paused ? "▶" : "⏸";
+  boardBtnPlayPause.setAttribute(
+    "aria-label",
+    reviewerVideo.paused ? "Play" : "Pause"
+  );
+}
+
+function updateBoardVideoHud() {
+  if (!reviewerVideo?.src) return;
+  const t = reviewerVideo.currentTime || 0;
+  const frame = timeToFrame(t);
+  if (boardVideoTimeDisplay) boardVideoTimeDisplay.textContent = formatTime(t);
+  if (boardVideoFrameDisplay) {
+    boardVideoFrameDisplay.textContent = `frame ${frame}`;
+  }
+  if (boardVideoSeek) {
+    boardSeekSyncing = true;
+    boardVideoSeek.min = "0";
+    boardVideoSeek.max = String(boardWindowSec || 30);
+    boardVideoSeek.value = String(Math.min(boardWindowSec || 30, Math.max(0, t)));
+    boardSeekSyncing = false;
+  }
+  updateBoardPlayPauseButton();
+}
+
+function updateBoardTimelineTrack() {
+  if (!boardTimelineTrack) return;
+  boardTimelineTrack.innerHTML = `<div class="timeline-zone timeline-zone-core" style="width:100%"></div>`;
+}
+
+function updateBoardTimelineSeekRange() {
+  if (!boardVideoSeek) return;
+  boardWindowSec =
+    reviewerVideo?.duration && Number.isFinite(reviewerVideo.duration)
+      ? reviewerVideo.duration
+      : 30;
+  boardVideoSeek.min = "0";
+  boardVideoSeek.max = String(boardWindowSec);
+  boardVideoSeek.step = "0.01";
+  updateBoardTimelineTrack();
+}
+
+function ensureBoardTimelineTooltip() {
+  if (boardTimelineTooltip) return boardTimelineTooltip;
+  if (!boardVideoTimeline) return null;
+  boardTimelineTooltip = document.createElement("div");
+  boardTimelineTooltip.id = "board-timeline-marker-tooltip";
+  boardTimelineTooltip.className = "timeline-marker-tooltip hidden";
+  boardTimelineTooltip.setAttribute("role", "tooltip");
+  boardVideoTimeline.appendChild(boardTimelineTooltip);
+  return boardTimelineTooltip;
+}
+
+function showBoardTimelineMarkerTooltip(marker) {
+  const tip = ensureBoardTimelineTooltip();
+  if (!tip || !marker) return;
+  const labelName =
+    marker.dataset.labelName || labelDisplayName(marker.dataset.label) || "Event";
+  const frame = marker.dataset.frame ?? "—";
+  const timeSec = Number(marker.dataset.time);
+  const timeText = Number.isFinite(timeSec) ? `${timeSec.toFixed(2)}s` : "—";
+  const who = marker.dataset.who || "";
+  const color = marker.style.background || LABEL_COLORS[marker.dataset.label] || "#94a3b8";
+  tip.style.setProperty("--tooltip-accent", color);
+  tip.innerHTML = `
+    <span class="timeline-tooltip-swatch" style="background:${color}"></span>
+    <span class="timeline-tooltip-label">${labelName}</span>
+    <span class="timeline-tooltip-meta">frame ${frame} · ${timeText}</span>
+    <span class="timeline-tooltip-who">${who}</span>
+  `;
+  tip.classList.remove("hidden");
+  const timelineRect = boardVideoTimeline.getBoundingClientRect();
+  const markerRect = marker.getBoundingClientRect();
+  const centerX = markerRect.left + markerRect.width / 2 - timelineRect.left;
+  tip.style.left = `${centerX}px`;
+}
+
+function hideBoardTimelineMarkerTooltip() {
+  boardTimelineTooltip?.classList.add("hidden");
+}
+
+function renderBoardTimelineMarkers() {
+  if (!boardTimelineMarkers) return;
+  if (!reviewerVideo?.src) {
+    boardTimelineMarkers.innerHTML = "";
+    hideBoardTimelineMarkerTooltip();
+    return;
+  }
+  const windowSec = boardWindowSec || 30;
+  boardTimelineMarkers.innerHTML = boardEvents
+    .slice()
+    .sort((a, b) => Number(a.time_sec) - Number(b.time_sec))
+    .map((e) => {
+      const pct = Math.min(100, Math.max(0, (Number(e.time_sec) / windowSec) * 100));
+      const color = LABEL_COLORS[e.label] || "#94a3b8";
+      const labelName = labelDisplayName(e.label);
+      const who = labelerName(boardLabelers, e.participant_id, e.user_id);
+      const frame = e.frame ?? timeToFrame(e.time_sec);
+      return `<button type="button" class="timeline-marker" data-time="${e.time_sec}" data-frame="${frame}" data-label="${e.label}" data-label-name="${labelName}" data-who="${who}" style="left:${pct}%;background:${color}" aria-label="${labelName}, frame ${frame}"></button>`;
+    })
+    .join("");
+}
+
+function startBoardVideoHudLoop() {
+  stopBoardVideoHudLoop();
+  const tick = () => {
+    updateBoardVideoHud();
+    boardFrameRafId = requestAnimationFrame(tick);
+  };
+  boardFrameRafId = requestAnimationFrame(tick);
+}
+
+function stopBoardVideoHudLoop() {
+  if (boardFrameRafId !== null) {
+    cancelAnimationFrame(boardFrameRafId);
+    boardFrameRafId = null;
+  }
+}
+
+function toggleBoardPlayPause() {
+  if (!reviewerVideo?.src) return;
+  if (reviewerVideo.paused) {
+    reviewerVideo.play().catch(() => {});
+  } else {
+    reviewerVideo.pause();
+  }
+  updateBoardPlayPauseButton();
+}
+
+function bindBoardPlayerHandlers() {
+  if (!hasBoardTimeline()) return;
+
+  boardBtnPlayPause?.addEventListener("click", toggleBoardPlayPause);
+  reviewerVideo?.addEventListener("play", updateBoardPlayPauseButton);
+  reviewerVideo?.addEventListener("pause", updateBoardPlayPauseButton);
+  reviewerVideo?.addEventListener("loadedmetadata", () => {
+    if (reviewerVideo.duration && Number.isFinite(reviewerVideo.duration)) {
+      videoFps = DEFAULT_FPS;
+    }
+    updateBoardTimelineSeekRange();
+    renderBoardTimelineMarkers();
+    updateBoardVideoHud();
+  });
+
+  boardVideoSeek?.addEventListener("input", () => {
+    if (boardSeekSyncing || !reviewerVideo?.src) return;
+    reviewerVideo.currentTime = parseFloat(boardVideoSeek.value);
+    updateBoardVideoHud();
+  });
+
+  boardVideoTimeline?.addEventListener("click", (e) => {
+    const marker = e.target.closest(".timeline-marker");
+    if (!marker || !reviewerVideo?.src) return;
+    reviewerVideo.pause();
+    reviewerVideo.currentTime = parseFloat(marker.dataset.time);
+    updateBoardVideoHud();
+  });
+
+  boardVideoTimeline?.addEventListener("mouseover", (e) => {
+    const marker = e.target.closest(".timeline-marker");
+    if (marker) showBoardTimelineMarkerTooltip(marker);
+  });
+
+  boardVideoTimeline?.addEventListener("mouseout", (e) => {
+    const marker = e.target.closest(".timeline-marker");
+    if (!marker) return;
+    const to = e.relatedTarget;
+    if (!to || !marker.contains(to)) hideBoardTimelineMarkerTooltip();
+  });
+}
+
 function renderVideoList(videos) {
   if (!videoList) return;
   boardVideosCache = videos || [];
+  updateDateFilterLabel();
   videoList.innerHTML = "";
   if (!boardVideosCache.length) {
     videoList.innerHTML = "<li><em>No saved videos yet</em></li>";
@@ -1865,15 +2113,17 @@ function renderVideoList(videos) {
     const groupVideos = groups.get(dateKey) || [];
     const expanded = isDateGroupExpanded(dateKey, filterDate);
     const section = document.createElement("li");
-    section.className = "video-list-date-group";
+    section.className = `video-list-date-group${expanded ? " is-expanded" : ""}`;
 
     const toggle = document.createElement("button");
     toggle.type = "button";
     toggle.className = "video-list-date-toggle";
     toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
     toggle.innerHTML = `<span class="video-list-date-chevron" aria-hidden="true">${expanded ? "▾" : "▸"}</span><span class="video-list-date-label">${formatDateGroupHeader(dateKey)}</span><span class="video-list-date-count">${groupVideos.length}</span>`;
-    toggle.addEventListener("click", () => {
-      const next = !isDateGroupExpanded(dateKey, filterDate);
+    toggle.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const next = !(toggle.getAttribute("aria-expanded") === "true");
       boardDateExpandState.set(dateKey, next);
       renderVideoList(boardVideosCache);
     });
@@ -1952,8 +2202,10 @@ function renderReviewerEvents(events, labelers) {
     : "<li><em>No annotations</em></li>";
   reviewerEvents.querySelectorAll("button.event-goto").forEach((b) => {
     b.addEventListener("click", () => {
+      if (!reviewerVideo) return;
       reviewerVideo.pause();
       reviewerVideo.currentTime = parseFloat(b.dataset.time);
+      updateBoardVideoHud();
     });
   });
 }
@@ -1964,6 +2216,9 @@ async function loadReviewerVideo(item, btn) {
   });
   btn.classList.add("active");
   const vid = item.video_id;
+  boardEvents = [];
+  boardLabelers = {};
+  renderBoardTimelineMarkers();
   reviewerVideo.src = vid
     ? new URL(serverVideoApiPath(vid), location.origin).href
     : item.video_url || "";
@@ -1973,8 +2228,18 @@ async function loadReviewerVideo(item, btn) {
     const res = await apiFetch(item.annotations_file);
     const data = await res.json();
     const { events, labelers } = normalizeReviewerEvents(data);
+    boardEvents = events;
+    boardLabelers = labelers;
     renderReviewerEvents(events, labelers);
+    renderBoardTimelineMarkers();
+    if (reviewerVideo.readyState >= HTMLMediaElement.HAVE_METADATA) {
+      updateBoardTimelineSeekRange();
+      updateBoardVideoHud();
+    }
+    startBoardVideoHudLoop();
   } catch {
     reviewerEvents.innerHTML = "<li>Failed to load annotations</li>";
+    boardEvents = [];
+    renderBoardTimelineMarkers();
   }
 }
