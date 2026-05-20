@@ -1416,6 +1416,7 @@ body.page-review .board-video-controller {
 .timeline-marker {
   --stack-y: 0px;
   position: absolute;
+  padding: 2px;
   top: 50%;
   width: 2px;
   height: 16px;
