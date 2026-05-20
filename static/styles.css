@@ -1342,7 +1342,7 @@ body.page-review .board-video-controller {
 
 .timeline-live-readout {
   position: absolute;
-  top: -1.5rem;
+  top: -1px;
   left: 0;
   transform: translate(-50%, 0);
   z-index: 16;
