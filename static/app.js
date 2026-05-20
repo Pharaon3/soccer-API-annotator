@@ -1797,6 +1797,16 @@ function removeSessionEvent(eventId) {
   }
 }
 
+function latestMyEvent() {
+  const minePid = myParticipantId ?? 0;
+  return jobEvents
+    .filter((e) => e.participant_id === minePid)
+    .sort((a, b) => {
+      if (a.time_sec !== b.time_sec) return b.time_sec - a.time_sec;
+      return (b.id ?? 0) - (a.id ?? 0);
+    })[0];
+}
+
 function applyLocalAnnotation(labelId, time_sec, frame) {
   const existing = findMyEventAtTimeAndLabel(time_sec, labelId);
   if (existing) {
@@ -2333,13 +2343,17 @@ function handleAnnotatorKeydown(e) {
 
   if (e.code === "Delete" || e.key === "Delete") {
     if (isAnnotatorShortcutBlocked(e)) return;
-    if (selectedEventId == null) return;
-    const selected = jobEvents.find(
-      (x) => x.id === selectedEventId && x.participant_id === myParticipantId
-    );
-    if (!selected || !canEditAnnotations()) return;
+    if (!canEditAnnotations()) return;
+    const selected =
+      selectedEventId == null
+        ? null
+        : jobEvents.find(
+            (x) => x.id === selectedEventId && x.participant_id === myParticipantId
+          );
+    const eventToDelete = selected || latestMyEvent();
+    if (!eventToDelete) return;
     e.preventDefault();
-    removeSessionEvent(selectedEventId);
+    removeSessionEvent(eventToDelete.id);
     return;
   }
 
