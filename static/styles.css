@@ -1281,7 +1281,7 @@ body.page-review .board-video-controller {
 
 .timeline-live-readout {
   position: absolute;
-  top: 0.12rem;
+  top: 0.42rem;
   left: 0;
   transform: translateX(-50%);
   z-index: 16;
@@ -1301,7 +1301,7 @@ body.page-review .board-video-controller {
 }
 
 .timeline-live-time {
-  margin-top: 0.06rem;
+  margin-top: 0.03rem;
   font-size: 0.64rem;
   font-weight: 600;
   color: #93c5fd;
@@ -1379,8 +1379,8 @@ body.page-review .board-video-controller {
 .video-seek::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 10px;
-  height: 32px;
-  margin-top: -13px;
+  height: 42px;
+  margin-top: -18px;
   background: #7dd3fc;
   border: 1px solid rgba(255, 255, 255, 0.95);
   border-radius: 999px;
@@ -1395,7 +1395,7 @@ body.page-review .board-video-controller {
 
 .video-seek::-moz-range-thumb {
   width: 10px;
-  height: 32px;
+  height: 42px;
   background: #7dd3fc;
   border: 1px solid rgba(255, 255, 255, 0.95);
   border-radius: 999px;
