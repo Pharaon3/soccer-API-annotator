@@ -1340,6 +1340,20 @@ body.page-review .board-video-controller {
   border-radius: 12px;
 }
 
+.video-timeline.timeline-disabled {
+  opacity: 0.6;
+}
+
+.video-timeline.timeline-disabled .timeline-live-readout {
+  pointer-events: none;
+  cursor: not-allowed;
+}
+
+.timeline-live-frame.disabled,
+.timeline-live-time.disabled {
+  opacity: 0.55;
+}
+
 .timeline-live-readout {
   position: absolute;
   top: -1px;

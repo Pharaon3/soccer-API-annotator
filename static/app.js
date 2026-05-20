@@ -406,6 +406,28 @@ function canEditAnnotations() {
   return !!currentJobId && !annotationsLocked && !!video.src;
 }
 
+function updateAnnotatorInteractionState() {
+  const editable = canEditAnnotations();
+  if (videoSeek) videoSeek.disabled = !editable;
+  if (videoTimeline) {
+    videoTimeline.classList.toggle("timeline-disabled", !editable);
+    videoTimeline.setAttribute("aria-disabled", editable ? "false" : "true");
+  }
+  if (videoFrameDisplay) {
+    videoFrameDisplay.classList.toggle("disabled", !editable);
+    if (!video.src) videoFrameDisplay.textContent = "—";
+  }
+  if (videoTimeDisplay) {
+    videoTimeDisplay.classList.toggle("disabled", !editable);
+    if (!video.src) videoTimeDisplay.textContent = "—";
+  }
+  if (labelButtons) {
+    labelButtons.querySelectorAll(".label-btn").forEach((btn) => {
+      btn.disabled = !editable;
+    });
+  }
+}
+
 const TEXT_ENTRY_INPUT_TYPES = new Set([
   "text",
   "search",
@@ -444,11 +466,7 @@ function isAnnotatorShortcutBlocked(e) {
 function setAnnotationsLocked(locked) {
   annotationsLocked = locked;
   document.body.classList.toggle("annotations-locked", locked);
-  if (labelButtons) {
-    labelButtons.querySelectorAll(".label-btn").forEach((btn) => {
-      btn.disabled = locked;
-    });
-  }
+  updateAnnotatorInteractionState();
   renderSessionEvents();
 }
 
@@ -1414,7 +1432,10 @@ function placeTimelineReadout(timelineEl, seekEl, readoutEl) {
 }
 
 function updateVideoHud() {
-  if (!video.src) return;
+  if (!video.src) {
+    updateAnnotatorInteractionState();
+    return;
+  }
   const globalT = globalTimeFromVideo();
   const frame = timeToFrame(globalT);
   if (videoTimeDisplay) videoTimeDisplay.textContent = globalT.toFixed(1);
@@ -1430,6 +1451,7 @@ function updateVideoHud() {
   }
   placeTimelineReadout(videoTimeline, videoSeek, videoTimeline?.querySelector(".timeline-live-readout"));
   updatePlayPauseButton();
+  updateAnnotatorInteractionState();
 }
 
 function updateTimelineSeekRange() {
@@ -1519,7 +1541,11 @@ function renderTimelineMarkers() {
     return;
   }
   const windowSec = jobWindowSec || 30;
-  const sorted = jobEvents.slice().sort((a, b) => a.time_sec - b.time_sec);
+  const minePid = myParticipantId ?? 0;
+  const sorted = jobEvents
+    .slice()
+    .filter((e) => e.participant_id === minePid)
+    .sort((a, b) => a.time_sec - b.time_sec);
   timelineMarkers.innerHTML = sorted
     .map((e, i) => {
       const pct = Math.min(100, Math.max(0, (e.time_sec / windowSec) * 100));
@@ -1635,11 +1661,16 @@ function clearAnnotatorVideo(showNextTimer = false) {
   hideVideoReady();
   video.pause();
   video.removeAttribute("src");
+  video.load();
   updatePlayPauseButton();
   updateVideoHud();
+  timelineMarkers.innerHTML = "";
+  hideTimelineMarkerTooltipFor(videoTimeline);
+  clearSelectedEvent();
   currentJobId = null;
   loadedVideoJobId = null;
   pendingApiVideoId = null;
+  updateAnnotatorInteractionState();
   if (showNextTimer) showApiNextIdle();
 }
 
