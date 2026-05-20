@@ -861,21 +861,22 @@ function showApiNextIdle() {
 }
 
 function startApiNextCountdown(durationSec = API_CALL_INTERVAL_SEC) {
-  if (!IS_ANNOTATOR_PAGE || !apiNextCountdown || !apiNextValue) return;
   const totalSec = Math.max(0, Number(durationSec) || API_CALL_INTERVAL_SEC);
+  startApiNextCountdownAt(Date.now() / 1000 + totalSec);
+}
+
+function startApiNextCountdownAt(nextCallAtSec) {
+  if (!IS_ANNOTATOR_PAGE || !apiNextCountdown || !apiNextValue) return;
+  const targetMs = Number(nextCallAtSec) * 1000;
+  if (!Number.isFinite(targetMs)) return;
   stopApiNextCountdown();
   apiNextWarned5Min = false;
   apiNextWarned1Min = false;
-  apiNextDeadlinePerf = performance.now() + totalSec * 1000;
   apiNextCountdown.classList.remove("hidden");
   apiNextCountdown.classList.add("active");
 
   const tick = () => {
-    if (apiNextDeadlinePerf === null) {
-      apiNextRafId = null;
-      return;
-    }
-    const leftSec = Math.max(0, (apiNextDeadlinePerf - performance.now()) / 1000);
+    const leftSec = Math.max(0, (targetMs - Date.now()) / 1000);
     if (leftSec <= 0) {
       apiNextValue.textContent = "0:00";
       apiNextCountdown.classList.remove("urgent", "critical");
@@ -909,12 +910,17 @@ function startApiNextCountdown(durationSec = API_CALL_INTERVAL_SEC) {
 
 function handleApiCallStarted(data) {
   notifyApiCallRequested(data.video_id);
-  startApiNextCountdown(data.interval_sec || API_CALL_INTERVAL_SEC);
+  if (data.next_call_at != null) {
+    startApiNextCountdownAt(data.next_call_at);
+  } else {
+    startApiNextCountdown(data.interval_sec || API_CALL_INTERVAL_SEC);
+  }
   if (data.video_id && role === "annotator") {
     showConnectionStatus(`API job started: ${data.video_id}`, true);
     if (jobInfo && !currentJobId) {
       jobInfo.textContent = `API job started · ${data.video_id} · waiting for video…`;
     }
+    showVideoReady();
   }
 }
 
@@ -1649,6 +1655,7 @@ async function startAnnotatorJob(data) {
 
 function handleAnnotateStart(data) {
   notifyNewAnnotationJob();
+  clearConnectionStatus();
   goToAnnotatorForJob(data);
 }
 
@@ -1838,7 +1845,7 @@ function handleMessage(data) {
           jobInfo.textContent = "Next practice round loads automatically twice per minute…";
         }
         buildLabelButtons();
-        if (!pendingTestJob) {
+        if (!pendingTestJob && !currentJobId) {
           stopApiCountdown(true);
         }
         showScreen(annotatorScreen);
@@ -1856,7 +1863,7 @@ function handleMessage(data) {
         }
         clearConnectionStatus();
         buildLabelButtons();
-        if (!pendingAnnotateJob) {
+        if (!pendingAnnotateJob && !currentJobId) {
           stopApiCountdown(true);
         }
         showScreen(annotatorScreen);

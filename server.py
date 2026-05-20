@@ -719,13 +719,22 @@ class ConnectionManager:
         except Exception:
             return False
 
+    def sync_job_online_annotators(self, job: ActiveJob) -> bool:
+        """Refresh job ranks from currently online annotators (before dispatch / reconnect)."""
+        online = self.snapshot_online_annotators()
+        if not online:
+            return False
+        job.rank_by_participant_id = self.ranks_for_sessions(online)
+        job.segment_total = len(online)
+        return True
+
     async def notify_annotate_ranks(self, job: ActiveJob, ranks: set[int]) -> None:
         dead: list[int] = []
         for aid, rank in job.rank_by_participant_id.items():
             if rank not in ranks:
                 continue
-            session = self.participants.get(aid)
-            if not session:
+            session = self.annotators.get(aid)
+            if not session or not session.online:
                 continue
             if not await self._send_annotate_start(job, session, rank):
                 dead.append(aid)
@@ -774,10 +783,17 @@ class ConnectionManager:
         )
 
     async def send_active_annotate_job(self, session: AnnotatorSession) -> None:
-        if not session.online or not active_jobs:
+        if (
+            not session.online
+            or session.annotator_id not in self.annotators
+            or not active_jobs
+        ):
             return
         job_id, job = max(active_jobs.items(), key=lambda item: item[1].started_at)
         rank = job.rank_by_participant_id.get(session.annotator_id)
+        if rank is None:
+            self.sync_job_online_annotators(job)
+            rank = job.rank_by_participant_id.get(session.annotator_id)
         if rank is None:
             return
         await session.websocket.send_text(
@@ -1216,6 +1232,13 @@ async def _run_annotate_job_body(
 
     if cancel_event and cancel_event.is_set():
         raise asyncio.CancelledError()
+    if not manager.sync_job_online_annotators(job):
+        logger.warning(
+            "Annotate job %s: no online annotators at dispatch", job_id
+        )
+        job_events.pop(job_id, None)
+        active_jobs.pop(job_id, None)
+        return {"predictions": []}
     dispatch_started = time.time()
     await manager.dispatch_annotate_job_videos(job, video_path, timing=timing)
     timing.dispatch_wall_sec = time.time() - dispatch_started
