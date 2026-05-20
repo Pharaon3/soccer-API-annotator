@@ -1354,7 +1354,7 @@ body.page-review .board-video-controller {
 .timeline-marker:hover,
 .timeline-marker:focus-visible {
   transform: rotate(45deg) scale(1.45);
-  z-index: 6;
+  z-index: 14;
   box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.35);
 }
 

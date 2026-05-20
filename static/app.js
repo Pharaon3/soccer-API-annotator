@@ -1282,20 +1282,24 @@ function hideTimelineMarkerTooltipFor(timelineEl) {
 function bindTimelineMarkerTooltips(timelineEl) {
   if (!timelineEl || timelineEl.dataset.markerTooltipsBound === "1") return;
   timelineEl.dataset.markerTooltipsBound = "1";
-  timelineEl.addEventListener("pointerover", (e) => {
+  const tip = ensureTimelineTooltipFor(timelineEl);
+  let hoverMarker = null;
+
+  timelineEl.addEventListener("mouseover", (e) => {
     const marker = e.target.closest(".timeline-marker");
     if (!marker || !timelineEl.contains(marker)) return;
-    showTimelineMarkerTooltipFor(
-      marker,
-      timelineEl,
-      ensureTimelineTooltipFor(timelineEl)
-    );
+    if (hoverMarker === marker) return;
+    hoverMarker = marker;
+    showTimelineMarkerTooltipFor(marker, timelineEl, tip);
   });
-  timelineEl.addEventListener("pointerout", (e) => {
+
+  timelineEl.addEventListener("mouseout", (e) => {
     const marker = e.target.closest(".timeline-marker");
-    if (!marker) return;
+    if (!marker || hoverMarker !== marker) return;
     const to = e.relatedTarget;
-    if (to && marker.contains(to)) return;
+    if (to && (marker === to || marker.contains(to))) return;
+    if (to?.closest?.(".timeline-marker") === marker) return;
+    hoverMarker = null;
     hideTimelineMarkerTooltipFor(timelineEl);
   });
 }
