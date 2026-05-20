@@ -109,9 +109,11 @@ body.page-test #events-list li {
 }
 
 .practice-video-panel {
-  padding: 0 0.75rem 0.5rem;
+  flex: 1;
+  min-height: 0;
+  padding: 0 0.35rem 0.5rem;
   border-bottom: 1px solid #3d3558;
-  max-height: 42vh;
+  overflow-x: hidden;
   overflow-y: auto;
 }
 
@@ -120,14 +122,25 @@ body.page-test #events-list li {
 }
 
 .practice-video-heading {
-  margin: 0.5rem 0 0.4rem;
-  font-size: 0.85rem;
+  margin: 0.35rem 0 0.5rem;
+  font-size: 0.9rem;
   font-weight: 600;
+  color: var(--muted);
 }
 
-.practice-video-list .video-card-btn.selected {
-  outline: 2px solid #7c6bb8;
-  background: #2a2540;
+body.page-practice .practice-video-panel .date-picker {
+  margin-bottom: 0.65rem;
+  padding: 0.55rem;
+}
+
+body.page-practice .practice-video-panel #video-list .video-card-btn {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+body.page-practice .practice-video-panel .video-list-id {
+  word-break: break-all;
 }
 
 /* Board (review) */

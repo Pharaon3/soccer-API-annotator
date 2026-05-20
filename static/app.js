@@ -93,7 +93,6 @@ const btnPracticeSync = document.getElementById("btn-practice-sync");
 const btnPracticePrivate = document.getElementById("btn-practice-private");
 const practiceModeHint = document.getElementById("practice-mode-hint");
 const practiceVideoPanel = document.getElementById("practice-video-panel");
-const practiceVideoList = document.getElementById("practice-video-list");
 const practiceEventsHeading = document.getElementById("practice-events-heading");
 
 let presenceOnline = true;
@@ -155,7 +154,6 @@ let countdownRafId = null;
 let countdownDeadline = null;
 let testNextRafId = null;
 let practiceMode = "sync";
-let practiceVideosCache = [];
 let testNextDeadline = null;
 let pendingTestJob = null;
 let nextTestRoundAtSec = null;
@@ -184,7 +182,14 @@ function participantColor(participantId) {
 }
 
 function usesGroupedVideoList() {
-  return IS_BOARD_PAGE || PAGE === "review" || !!videoDateFilter;
+  return IS_BOARD_PAGE || PAGE === "review" || IS_PRACTICE_PAGE || !!videoDateFilter;
+}
+
+function videoListOnSelect() {
+  if (isPrivatePractice()) {
+    return (video, btn) => startPrivatePractice(video, btn);
+  }
+  return (video, btn) => loadReviewerVideo(video, btn);
 }
 
 function isPrivatePractice() {
@@ -1749,8 +1754,8 @@ function setPracticeMode(mode) {
       jobInfo.textContent = "Private practice — choose a video from the list";
     }
   } else {
-    practiceVideoList?.querySelectorAll(".video-card-btn.selected").forEach((b) => {
-      b.classList.remove("selected");
+    videoList?.querySelectorAll("button.active").forEach((b) => {
+      b.classList.remove("active");
     });
     if (nextTestRoundAtSec) startTestNextCountdown(nextTestRoundAtSec);
     if (jobInfo) {
@@ -1761,10 +1766,10 @@ function setPracticeMode(mode) {
 
 async function startPrivatePractice(video, btn) {
   if (!isPrivatePractice() || !video?.video_id) return;
-  practiceVideoList?.querySelectorAll(".video-card-btn.selected").forEach((el) => {
-    el.classList.remove("selected");
+  videoList?.querySelectorAll("button.active").forEach((el) => {
+    el.classList.remove("active");
   });
-  btn?.classList.add("selected");
+  btn?.classList.add("active");
   const data = buildPrivatePracticeJob(video);
   stopApiCountdown(true);
   stopTestNextCountdown(true);
@@ -1775,9 +1780,27 @@ async function startPrivatePractice(video, btn) {
   await startAnnotatorJob(data);
 }
 
+function bindVideoListDateHandlers() {
+  videoDateFilter?.addEventListener("change", () => {
+    setVideoDateFilter(videoDateFilter.value);
+  });
+  btnClearDateFilter?.addEventListener("click", () => {
+    setVideoDateFilter("");
+  });
+  btnDatePickerOpen?.addEventListener("click", openDatePicker);
+  document.querySelectorAll("[data-date-quick]").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      const quick = chip.dataset.dateQuick;
+      if (quick === "today") setVideoDateFilter(todayDateKey());
+      else if (quick === "yesterday") setVideoDateFilter(yesterdayDateKey());
+    });
+  });
+}
+
 function bindPracticeModeControls() {
   btnPracticeSync?.addEventListener("click", () => setPracticeMode("sync"));
   btnPracticePrivate?.addEventListener("click", () => setPracticeMode("private"));
+  bindVideoListDateHandlers();
   updatePracticeModeUI();
 }
 
@@ -1892,9 +1915,7 @@ function handleMessage(data) {
       }
       break;
     case "videos_list":
-      if (IS_PRACTICE_PAGE && isPrivatePractice()) {
-        renderPracticeVideoList(data.videos);
-      } else {
+      if (videoList && (IS_BOARD_PAGE || isPrivatePractice())) {
         renderVideoList(data.videos);
       }
       break;
@@ -2104,20 +2125,7 @@ function bindReviewHandlers() {
   document.getElementById("btn-refresh-videos")?.addEventListener("click", () => {
     send({ type: "list_videos" });
   });
-  videoDateFilter?.addEventListener("change", () => {
-    setVideoDateFilter(videoDateFilter.value);
-  });
-  btnClearDateFilter?.addEventListener("click", () => {
-    setVideoDateFilter("");
-  });
-  btnDatePickerOpen?.addEventListener("click", openDatePicker);
-  document.querySelectorAll("[data-date-quick]").forEach((chip) => {
-    chip.addEventListener("click", () => {
-      const quick = chip.dataset.dateQuick;
-      if (quick === "today") setVideoDateFilter(todayDateKey());
-      else if (quick === "yesterday") setVideoDateFilter(yesterdayDateKey());
-    });
-  });
+  bindVideoListDateHandlers();
   bindBoardPlayerHandlers();
 }
 
@@ -2376,27 +2384,6 @@ function bindBoardPlayerHandlers() {
   });
 }
 
-function renderPracticeVideoList(videos) {
-  if (!practiceVideoList) return;
-  practiceVideosCache = videos || [];
-  practiceVideoList.innerHTML = "";
-  const withUrl = practiceVideosCache.filter((v) => v.video_url);
-  if (!withUrl.length) {
-    practiceVideoList.innerHTML = "<li><em>No saved videos yet</em></li>";
-    return;
-  }
-  const sorted = [...withUrl].sort(
-    (a, b) => Number(b.saved_at || 0) - Number(a.saved_at || 0)
-  );
-  for (const entry of sorted) {
-    const li = document.createElement("li");
-    li.appendChild(
-      createVideoListButton(entry, (video, btn) => startPrivatePractice(video, btn))
-    );
-    practiceVideoList.appendChild(li);
-  }
-}
-
 function renderVideoList(videos) {
   if (!videoList) return;
   boardVideosCache = videos || [];
@@ -2407,12 +2394,12 @@ function renderVideoList(videos) {
     return;
   }
 
+  const onSelect = videoListOnSelect();
+
   if (!usesGroupedVideoList()) {
     boardVideosCache.forEach((v) => {
       const li = document.createElement("li");
-      li.appendChild(
-        createVideoListButton(v, (video, btn) => loadReviewerVideo(video, btn))
-      );
+      li.appendChild(createVideoListButton(v, onSelect));
       videoList.appendChild(li);
     });
     return;
@@ -2465,9 +2452,7 @@ function renderVideoList(videos) {
     items.className = `video-list-date-items${expanded ? "" : " collapsed"}`;
     for (const video of groupVideos) {
       const row = document.createElement("li");
-      row.appendChild(
-        createVideoListButton(video, (entry, btn) => loadReviewerVideo(entry, btn))
-      );
+      row.appendChild(createVideoListButton(video, onSelect));
       items.appendChild(row);
     }
 
