@@ -70,6 +70,8 @@ let boardFrameRafId = null;
 let boardTimelineTooltip = null;
 let apiNextWarned5Min = false;
 let apiNextWarned1Min = false;
+let apiNextDeadlinePerf = null;
+let apiNextRafId = null;
 const btnPlayPause = document.getElementById("btn-play-pause");
 const videoTimeDisplay = document.getElementById("video-time-display");
 const videoFrameDisplay = document.getElementById("video-frame-display");
@@ -815,16 +817,12 @@ function formatApiCountdown(secLeft) {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-function resetApiNextWarnings(secondsLeft) {
-  if (secondsLeft > API_NEXT_WARN_5_MIN_SEC) {
-    apiNextWarned5Min = false;
-    apiNextWarned1Min = false;
-  } else if (secondsLeft > API_NEXT_WARN_1_MIN_SEC) {
-    apiNextWarned1Min = false;
-  }
-}
-
 function stopApiNextCountdown(hide = false) {
+  if (apiNextRafId !== null) {
+    cancelAnimationFrame(apiNextRafId);
+    apiNextRafId = null;
+  }
+  apiNextDeadlinePerf = null;
   if (!apiNextCountdown) return;
   apiNextCountdown.classList.remove("active", "urgent", "critical");
   if (hide) {
@@ -833,58 +831,64 @@ function stopApiNextCountdown(hide = false) {
   }
 }
 
-function updateApiNextCountdown(data) {
+function showApiNextIdle() {
   if (!IS_ANNOTATOR_PAGE || !apiNextCountdown || !apiNextValue) return;
+  stopApiNextCountdown();
+  apiNextCountdown.classList.remove("hidden");
+  apiNextCountdown.classList.add("active");
+  apiNextValue.textContent = "—";
+}
 
-  const rawLeft = data.seconds_left;
-  if (rawLeft == null || !Number.isFinite(Number(rawLeft))) {
-    stopApiNextCountdown();
-    apiNextCountdown.classList.remove("hidden");
-    apiNextCountdown.classList.add("active");
-    apiNextValue.textContent = "—";
-    return;
-  }
-
-  const leftSec = Math.max(0, Number(rawLeft));
-  resetApiNextWarnings(leftSec);
+function startApiNextCountdown(durationSec = API_CALL_INTERVAL_SEC) {
+  if (!IS_ANNOTATOR_PAGE || !apiNextCountdown || !apiNextValue) return;
+  const totalSec = Math.max(0, Number(durationSec) || API_CALL_INTERVAL_SEC);
+  stopApiNextCountdown();
+  apiNextWarned5Min = false;
+  apiNextWarned1Min = false;
+  apiNextDeadlinePerf = performance.now() + totalSec * 1000;
   apiNextCountdown.classList.remove("hidden");
   apiNextCountdown.classList.add("active");
 
-  if (leftSec <= 0) {
-    apiNextValue.textContent = "0:00";
-    apiNextCountdown.classList.remove("urgent", "critical");
-    return;
-  }
+  const tick = () => {
+    if (apiNextDeadlinePerf === null) {
+      apiNextRafId = null;
+      return;
+    }
+    const leftSec = Math.max(0, (apiNextDeadlinePerf - performance.now()) / 1000);
+    if (leftSec <= 0) {
+      apiNextValue.textContent = "0:00";
+      apiNextCountdown.classList.remove("urgent", "critical");
+      apiNextRafId = null;
+      return;
+    }
+    apiNextValue.textContent = formatApiCountdown(leftSec);
+    apiNextCountdown.classList.toggle("urgent", leftSec <= API_NEXT_WARN_5_MIN_SEC);
+    apiNextCountdown.classList.toggle("critical", leftSec <= API_NEXT_WARN_1_MIN_SEC);
 
-  apiNextValue.textContent = formatApiCountdown(leftSec);
-  apiNextCountdown.classList.toggle("urgent", leftSec <= API_NEXT_WARN_5_MIN_SEC);
-  apiNextCountdown.classList.toggle("critical", leftSec <= API_NEXT_WARN_1_MIN_SEC);
-
-  if (leftSec <= API_NEXT_WARN_5_MIN_SEC && !apiNextWarned5Min) {
-    apiNextWarned5Min = true;
-    showDesktopNotification(
-      "Next API call soon",
-      "About 5 minutes until the next annotation request is expected.",
-      "api-next-5m"
-    );
-  }
-  if (leftSec <= API_NEXT_WARN_1_MIN_SEC && !apiNextWarned1Min) {
-    apiNextWarned1Min = true;
-    showDesktopNotification(
-      "Next API call in 1 minute",
-      "Stay online — a new annotation request is expected soon.",
-      "api-next-1m"
-    );
-  }
-}
-
-function handleApiSchedule(data) {
-  updateApiNextCountdown(data);
+    if (leftSec <= API_NEXT_WARN_5_MIN_SEC && !apiNextWarned5Min) {
+      apiNextWarned5Min = true;
+      showDesktopNotification(
+        "Next API call soon",
+        "About 5 minutes until the next annotation request is expected.",
+        "api-next-5m"
+      );
+    }
+    if (leftSec <= API_NEXT_WARN_1_MIN_SEC && !apiNextWarned1Min) {
+      apiNextWarned1Min = true;
+      showDesktopNotification(
+        "Next API call in 1 minute",
+        "Stay online — a new annotation request is expected soon.",
+        "api-next-1m"
+      );
+    }
+    apiNextRafId = requestAnimationFrame(tick);
+  };
+  apiNextRafId = requestAnimationFrame(tick);
 }
 
 function handleApiCallStarted(data) {
   notifyApiCallRequested(data.video_id);
-  updateApiNextCountdown(data);
+  startApiNextCountdown(data.interval_sec || API_CALL_INTERVAL_SEC);
   if (data.video_id && role === "annotator") {
     showConnectionStatus(`API job started: ${data.video_id}`, true);
     if (jobInfo && !currentJobId) {
@@ -1679,6 +1683,7 @@ function handleMessage(data) {
         }
         showScreen(annotatorScreen);
         requestNotificationPermission();
+        showApiNextIdle();
         if (pendingAnnotateJob) {
           const job = applyRoleAckToJob(pendingAnnotateJob, data);
           pendingAnnotateJob = null;
@@ -1709,9 +1714,6 @@ function handleMessage(data) {
         const online = data.online_count ?? data.count;
         sessionInfo.textContent = `Annotators: ${online} online / ${data.count} connected`;
       }
-      break;
-    case "api_schedule":
-      if (IS_ANNOTATOR_PAGE) handleApiSchedule(data);
       break;
     case "api_call_started":
       if (IS_ANNOTATOR_PAGE) handleApiCallStarted(data);

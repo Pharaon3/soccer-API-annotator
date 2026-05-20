@@ -550,7 +550,6 @@ class ConnectionManager:
                 dead.append(aid)
         for aid in dead:
             await self._drop_participant(aid)
-        await self.broadcast_api_schedule()
 
     async def send_test_schedule(self, ws: WebSocket) -> None:
         if self._next_test_round_at is None:
@@ -1424,27 +1423,14 @@ async def _session_maintenance_loop() -> None:
         purge_expired_sessions()
 
 
-async def _api_schedule_tick_loop() -> None:
-    """Broadcast server-computed seconds_left so clients avoid clock skew."""
-    while True:
-        await asyncio.sleep(1)
-        if _next_api_call_at is None or not manager.annotators:
-            continue
-        try:
-            await manager.broadcast_api_schedule()
-        except Exception:
-            logger.exception("API schedule tick broadcast failed")
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     del app
     validate_startup_config()
     test_task = asyncio.create_task(_test_scheduler_loop())
     session_task = asyncio.create_task(_session_maintenance_loop())
-    api_schedule_task = asyncio.create_task(_api_schedule_tick_loop())
     yield
-    for task in (test_task, session_task, api_schedule_task):
+    for task in (test_task, session_task):
         task.cancel()
         try:
             await task
@@ -1705,7 +1691,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             }
                         )
                     )
-                    await manager.send_api_schedule(websocket)
                     if active_jobs:
                         await manager.send_active_annotate_job(annotator_session)
                 elif role == "reviewer":
