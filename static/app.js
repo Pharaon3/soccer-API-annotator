@@ -89,6 +89,12 @@ let timelineTooltip = null;
 const btnPresence = document.getElementById("btn-presence");
 const presenceOverlay = document.getElementById("presence-overlay");
 const btnPresenceConfirm = document.getElementById("btn-presence-confirm");
+const btnPracticeSync = document.getElementById("btn-practice-sync");
+const btnPracticePrivate = document.getElementById("btn-practice-private");
+const practiceModeHint = document.getElementById("practice-mode-hint");
+const practiceVideoPanel = document.getElementById("practice-video-panel");
+const practiceVideoList = document.getElementById("practice-video-list");
+const practiceEventsHeading = document.getElementById("practice-events-heading");
 
 let presenceOnline = true;
 let presenceIdleTimer = null;
@@ -148,6 +154,8 @@ let frameRafId = null;
 let countdownRafId = null;
 let countdownDeadline = null;
 let testNextRafId = null;
+let practiceMode = "sync";
+let practiceVideosCache = [];
 let testNextDeadline = null;
 let pendingTestJob = null;
 let nextTestRoundAtSec = null;
@@ -177,6 +185,14 @@ function participantColor(participantId) {
 
 function usesGroupedVideoList() {
   return IS_BOARD_PAGE || PAGE === "review" || !!videoDateFilter;
+}
+
+function isPrivatePractice() {
+  return IS_PRACTICE_PAGE && practiceMode === "private";
+}
+
+function isSyncPractice() {
+  return IS_PRACTICE_PAGE && practiceMode === "sync";
 }
 
 function hasBoardTimeline() {
@@ -741,7 +757,7 @@ function startApiCountdownSecondsLeft(secondsLeft) {
       apiCountdown.classList.add("done");
       countdownRafId = null;
       setAnnotationsLocked(true);
-      if (IS_PRACTICE_PAGE) {
+      if (IS_PRACTICE_PAGE && isSyncPractice()) {
         currentJobId = null;
         loadedVideoJobId = null;
         if (nextTestRoundAtSec) startTestNextCountdown(nextTestRoundAtSec);
@@ -1416,7 +1432,7 @@ function removeSessionEvent(eventId) {
   sessionEvents = jobEvents.filter((x) => x.participant_id === myParticipantId);
   renderSessionEvents();
   renderTimelineMarkers();
-  if (currentJobId) {
+  if (currentJobId && !isPrivatePractice()) {
     send({
       type: "annotation_remove",
       job_id: currentJobId,
@@ -1427,11 +1443,37 @@ function removeSessionEvent(eventId) {
   }
 }
 
+function applyLocalAnnotation(labelId, time_sec, frame) {
+  const existing = findMyEventAtTime(time_sec);
+  if (existing) {
+    if (existing.label === labelId) return;
+    removeSessionEvent(existing.id);
+  }
+  const pid = myParticipantId ?? 0;
+  const uid = `p${pid}-${time_sec}-${labelId}`;
+  jobEvents.push({
+    id: ++nextEventId,
+    time_sec,
+    frame,
+    label: labelId,
+    participant_id: pid,
+    uid,
+  });
+  sessionEvents = jobEvents.filter((x) => x.participant_id === myParticipantId);
+  renderSessionEvents();
+  renderTimelineMarkers();
+  showOverlay(labelId, frame);
+}
+
 function annotate(labelId) {
   if (!canEditAnnotations()) return;
   const time_sec = globalTimeFromVideo();
   if (!isInAnnotationRange(time_sec)) return;
   const frame = timeToFrame(time_sec);
+  if (isPrivatePractice()) {
+    applyLocalAnnotation(labelId, time_sec, frame);
+    return;
+  }
   const existing = findMyEventAtTime(time_sec);
   if (existing) {
     if (existing.label === labelId) return;
@@ -1553,7 +1595,11 @@ async function startAnnotatorJob(data) {
 
   const index = data.annotator_index ?? 1;
   const total = data.annotator_total ?? 1;
-  const prefix = IS_PRACTICE_PAGE ? "Practice round" : "Job active";
+  const prefix = isPrivatePractice()
+    ? "Private practice"
+    : IS_PRACTICE_PAGE
+      ? "Practice round"
+      : "Job active";
   if (jobInfo) {
     jobInfo.textContent = `${prefix} · waiting for video ${videoId}… · ${index}/${total}`;
   }
@@ -1625,10 +1671,118 @@ function handleDuplicateCacheHit(data) {
 }
 
 function handleTestStart(data) {
+  if (isPrivatePractice()) return;
   goToTestJob(data);
 }
 
+function buildPrivatePracticeJob(video) {
+  return {
+    job_id: `private-${video.video_id}-${Date.now()}`,
+    video_id: video.video_id,
+    video_file: serverVideoApiPath(video.video_id),
+    source_url: video.video_url,
+    annotator_index: 1,
+    annotator_total: 1,
+    segment_window_sec: 30,
+    start_offset_sec: 0,
+    time_origin_sec: 0,
+    segment_end_sec: 30,
+    clip_duration_sec: 30,
+    segment_core_start_sec: 0,
+    segment_core_end_sec: 30,
+    duration_sec: 30,
+    seconds_left: 3600,
+  };
+}
+
+function resetPracticeJob() {
+  stopApiCountdown(true);
+  stopVideoPoll();
+  stopVideoHudLoop();
+  currentJobId = null;
+  loadedVideoJobId = null;
+  jobEvents = [];
+  sessionEvents = [];
+  renderSessionEvents();
+  renderTimelineMarkers();
+  hideVideoReady();
+  video.pause();
+  video.removeAttribute("src");
+  updatePlayPauseButton();
+  updateVideoHud();
+}
+
+function updatePracticeModeUI() {
+  const sync = practiceMode === "sync";
+  btnPracticeSync?.classList.toggle("active", sync);
+  btnPracticePrivate?.classList.toggle("active", !sync);
+  btnPracticeSync?.setAttribute("aria-pressed", sync ? "true" : "false");
+  btnPracticePrivate?.setAttribute("aria-pressed", sync ? "false" : "true");
+  practiceVideoPanel?.classList.toggle("hidden", sync);
+  testNextCountdown?.classList.toggle("hidden", !sync);
+  if (!sync) {
+    apiCountdown?.classList.add("hidden");
+  }
+  if (practiceModeHint) {
+    practiceModeHint.textContent = sync
+      ? "Scheduled rounds with other online practice users."
+      : "Pick a saved video and practice on the full 30s clip by yourself.";
+  }
+  if (practiceEventsHeading) {
+    practiceEventsHeading.textContent = sync
+      ? "Events this session"
+      : "Your annotations (local only)";
+  }
+}
+
+function setPracticeMode(mode) {
+  if (!IS_PRACTICE_PAGE || (mode !== "sync" && mode !== "private")) return;
+  if (mode === practiceMode) return;
+  practiceMode = mode;
+  updatePracticeModeUI();
+  resetPracticeJob();
+  send({ type: "set_practice_mode", mode });
+  if (mode === "private") {
+    stopTestNextCountdown(true);
+    send({ type: "list_videos" });
+    if (jobInfo) {
+      jobInfo.textContent = "Private practice — choose a video from the list";
+    }
+  } else {
+    practiceVideoList?.querySelectorAll(".video-card-btn.selected").forEach((b) => {
+      b.classList.remove("selected");
+    });
+    if (nextTestRoundAtSec) startTestNextCountdown(nextTestRoundAtSec);
+    if (jobInfo) {
+      jobInfo.textContent = "Next practice round loads automatically twice per minute…";
+    }
+  }
+}
+
+async function startPrivatePractice(video, btn) {
+  if (!isPrivatePractice() || !video?.video_id) return;
+  practiceVideoList?.querySelectorAll(".video-card-btn.selected").forEach((el) => {
+    el.classList.remove("selected");
+  });
+  btn?.classList.add("selected");
+  const data = buildPrivatePracticeJob(video);
+  stopApiCountdown(true);
+  stopTestNextCountdown(true);
+  setAnnotationsLocked(false);
+  if (jobInfo) {
+    jobInfo.textContent = `Private practice · full 30s · ${video.video_id}`;
+  }
+  await startAnnotatorJob(data);
+}
+
+function bindPracticeModeControls() {
+  btnPracticeSync?.addEventListener("click", () => setPracticeMode("sync"));
+  btnPracticePrivate?.addEventListener("click", () => setPracticeMode("private"));
+  updatePracticeModeUI();
+}
+
 function goToTestJob(data) {
+  if (isPrivatePractice()) return;
   buildLabelButtons();
   showScreen(annotatorScreen);
   showVideoReady();
@@ -1644,6 +1798,7 @@ function goToTestJob(data) {
 }
 
 function handleTestSchedule(data) {
+  if (isPrivatePractice()) return;
   nextTestRoundAtSec = data.next_round_at;
   if (!currentJobId) {
     startTestNextCountdown(nextTestRoundAtSec);
@@ -1730,8 +1885,18 @@ function handleMessage(data) {
     case "test_schedule":
       if (IS_PRACTICE_PAGE) handleTestSchedule(data);
       break;
+    case "practice_mode_ack":
+      if (IS_PRACTICE_PAGE && data.mode) {
+        practiceMode = data.mode === "private" ? "private" : "sync";
+        updatePracticeModeUI();
+      }
+      break;
     case "videos_list":
-      renderVideoList(data.videos);
+      if (IS_PRACTICE_PAGE && isPrivatePractice()) {
+        renderPracticeVideoList(data.videos);
+      } else {
+        renderVideoList(data.videos);
+      }
       break;
     case "videos_updated":
       if (role === "reviewer") {
@@ -1893,6 +2058,7 @@ async function bootApp() {
   if (IS_PRACTICE_PAGE) {
     document.body.classList.add("no-scroll");
     buildLabelButtons();
+    bindPracticeModeControls();
     showScreen(annotatorScreen);
     await enterRole("test");
     return;
@@ -2208,6 +2374,27 @@ function bindBoardPlayerHandlers() {
     const to = e.relatedTarget;
     if (!to || !marker.contains(to)) hideBoardTimelineMarkerTooltip();
   });
+}
+
+function renderPracticeVideoList(videos) {
+  if (!practiceVideoList) return;
+  practiceVideosCache = videos || [];
+  practiceVideoList.innerHTML = "";
+  const withUrl = practiceVideosCache.filter((v) => v.video_url);
+  if (!withUrl.length) {
+    practiceVideoList.innerHTML = "<li><em>No saved videos yet</em></li>";
+    return;
+  }
+  const sorted = [...withUrl].sort(
+    (a, b) => Number(b.saved_at || 0) - Number(a.saved_at || 0)
+  );
+  for (const entry of sorted) {
+    const li = document.createElement("li");
+    li.appendChild(
+      createVideoListButton(entry, (video, btn) => startPrivatePractice(video, btn))
+    );
+    practiceVideoList.appendChild(li);
+  }
 }
 
 function renderVideoList(videos) {

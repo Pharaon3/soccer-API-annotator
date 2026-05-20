@@ -48,6 +48,11 @@
 
       <aside class="events-sidebar">
         <section class="events-panel">
+          <div class="practice-mode-bar" role="group" aria-label="Practice mode">
+            <button type="button" id="btn-practice-sync" class="practice-mode-btn active" aria-pressed="true">Sync practice</button>
+            <button type="button" id="btn-practice-private" class="practice-mode-btn" aria-pressed="false">Private practice</button>
+          </div>
+          <p id="practice-mode-hint" class="practice-mode-hint">Scheduled rounds with other online practice users.</p>
           <div class="sidebar-toolbar">
             <a href="/" class="small-btn nav-link">Home</a>
             <a href="/annotator" class="small-btn nav-link">Annotator</a>
@@ -61,7 +66,11 @@
             </div>
           </div>
           <p id="connection-status" class="connection-status hidden" role="alert"></p>
-          <h2>Events this session</h2>
+          <section id="practice-video-panel" class="practice-video-panel hidden" aria-label="Saved videos">
+            <h2 class="practice-video-heading">Choose a video</h2>
+            <ul id="practice-video-list" class="video-list practice-video-list"></ul>
+          </section>
+          <h2 id="practice-events-heading">Events this session</h2>
           <ul id="events-list"></ul>
         </section>
         <span id="annotator-badge" class="sr-only">Practice</span>

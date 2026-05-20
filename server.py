@@ -311,6 +311,7 @@ class AnnotatorSession:
     joined_at: float = field(default_factory=time.time)
     online: bool = True
     user_id: str | None = None
+    practice_mode: str = "sync"  # "sync" | "private"
 
 
 @dataclass
@@ -576,6 +577,8 @@ class ConnectionManager:
         )
         dead: list[int] = []
         for aid, session in self.test_annotators.items():
+            if session.practice_mode != "sync":
+                continue
             try:
                 await session.websocket.send_text(msg)
             except Exception:
@@ -653,7 +656,11 @@ class ConnectionManager:
 
     def snapshot_online_test_annotators(self) -> list[AnnotatorSession]:
         return sorted(
-            (s for s in self.test_annotators.values() if s.online),
+            (
+                s
+                for s in self.test_annotators.values()
+                if s.online and s.practice_mode == "sync"
+            ),
             key=lambda s: s.annotator_id,
         )
 
@@ -819,7 +826,7 @@ class ConnectionManager:
         ):
             rank = state.rank_by_participant_id[aid]
             session = self.test_annotators.get(aid)
-            if not session:
+            if not session or session.practice_mode != "sync":
                 continue
             try:
                 await session.websocket.send_text(
@@ -1827,7 +1834,19 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     )
                 continue
 
-            if msg_type == "list_videos" and role == "reviewer":
+            if msg_type == "set_practice_mode" and role == "test" and annotator_session:
+                mode = data.get("mode", "sync")
+                if mode not in ("sync", "private"):
+                    mode = "sync"
+                annotator_session.practice_mode = mode
+                await websocket.send_text(
+                    json.dumps({"type": "practice_mode_ack", "mode": mode})
+                )
+                if mode == "sync":
+                    await manager.send_test_schedule(websocket)
+                continue
+
+            if msg_type == "list_videos" and role in ("reviewer", "test"):
                 await websocket.send_text(
                     json.dumps(
                         {"type": "videos_list", "videos": _list_videos_data()}

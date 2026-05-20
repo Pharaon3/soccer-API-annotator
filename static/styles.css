@@ -72,6 +72,64 @@ body.page-test #events-list li {
   border-bottom-color: #3d3558;
 }
 
+.practice-mode-bar {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.65rem 0.75rem 0.35rem;
+}
+
+.practice-mode-btn {
+  flex: 1;
+  padding: 0.45rem 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  border: 1px solid #3d3558;
+  border-radius: 6px;
+  background: var(--surface2);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.practice-mode-btn:hover {
+  color: var(--text);
+  border-color: #5a4f82;
+}
+
+.practice-mode-btn.active {
+  background: #3d2f6b;
+  border-color: #7c6bb8;
+  color: #e8e4ff;
+}
+
+.practice-mode-hint {
+  margin: 0 0.75rem 0.5rem;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: var(--text-muted);
+}
+
+.practice-video-panel {
+  padding: 0 0.75rem 0.5rem;
+  border-bottom: 1px solid #3d3558;
+  max-height: 42vh;
+  overflow-y: auto;
+}
+
+.practice-video-panel.hidden {
+  display: none;
+}
+
+.practice-video-heading {
+  margin: 0.5rem 0 0.4rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.practice-video-list .video-card-btn.selected {
+  outline: 2px solid #7c6bb8;
+  background: #2a2540;
+}
+
 /* Board (review) */
 body.page-board,
 body.page-review {
@@ -967,21 +1025,99 @@ body.page-review .board-video-wrap {
   padding: 1rem 1.25rem;
 }
 
-.board-video-spinner {
-  width: 44px;
-  height: 44px;
-  margin: 0 auto 0.75rem;
-  border: 3px solid rgba(255, 255, 255, 0.12);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: app-boot-spin 0.75s linear infinite;
-}
-
 .board-video-loading-text {
-  margin: 0;
+  margin: 0.75rem 0 0;
   color: #cbd5e1;
   font-size: 0.9rem;
   font-weight: 600;
+}
+
+/* Cat loader — adapted from https://codepen.io/Rplus/pen/PWZYRM (Rplus) */
+.board-video-loading .cat-loader-box {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.board-video-loading .cat-loader {
+  position: relative;
+  width: 5.5rem;
+  overflow: hidden;
+  background-color: #e6dcdc;
+  border-radius: 8px;
+}
+
+.board-video-loading .cat-loader::before {
+  content: "";
+  display: block;
+  padding-bottom: 100%;
+}
+
+.board-video-loading .cat-loader__body,
+.board-video-loading .cat-loader__tail,
+.board-video-loading .cat-loader__head {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  animation: cat-loader-rotating 2.79s cubic-bezier(0.65, 0.54, 0.12, 0.93) infinite;
+}
+
+.board-video-loading .cat-loader__body::before,
+.board-video-loading .cat-loader__tail::before,
+.board-video-loading .cat-loader__head::before {
+  content: "";
+  position: absolute;
+  width: 50%;
+  height: 50%;
+  background-size: 200%;
+  background-repeat: no-repeat;
+  background-image: url("https://i.imgur.com/M1raXX3.png");
+}
+
+.board-video-loading .cat-loader__head::before {
+  top: 0;
+  right: 0;
+  background-position: 100% 0%;
+  transform-origin: 0% 100%;
+  transform: rotate(90deg);
+}
+
+.board-video-loading .cat-loader__tail {
+  animation-delay: 0.2s;
+}
+
+.board-video-loading .cat-loader__tail::before {
+  left: 0;
+  bottom: 0;
+  background-position: 0% 100%;
+  transform-origin: 100% 0%;
+  transform: rotate(-30deg);
+}
+
+.board-video-loading .cat-loader__body {
+  animation-delay: 0.1s;
+}
+
+.board-video-loading .cat-loader__body:nth-of-type(2) {
+  animation-delay: 0.2s;
+}
+
+.board-video-loading .cat-loader__body::before {
+  right: 0;
+  bottom: 0;
+  background-position: 100% 100%;
+  transform-origin: 0% 0%;
+}
+
+@keyframes cat-loader-rotating {
+  from {
+    transform: rotate(720deg);
+  }
+  to {
+    transform: none;
+  }
 }
 
 body.page-board #reviewer-video,
