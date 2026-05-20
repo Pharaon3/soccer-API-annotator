@@ -2383,6 +2383,7 @@ function bindReviewHandlers() {
 bootApp();
 
 btnPlayPause?.addEventListener("click", togglePlayPause);
+video?.addEventListener("click", togglePlayPause);
 
 videoSeek?.addEventListener("input", () => {
   if (seekSyncing) return;
@@ -2612,6 +2613,7 @@ function bindBoardPlayerHandlers() {
   if (!hasBoardTimeline()) return;
 
   boardBtnPlayPause?.addEventListener("click", toggleBoardPlayPause);
+  reviewerVideo?.addEventListener("click", toggleBoardPlayPause);
   reviewerVideo?.addEventListener("play", updateBoardPlayPauseButton);
   reviewerVideo?.addEventListener("pause", updateBoardPlayPauseButton);
   reviewerVideo?.addEventListener("loadstart", showBoardVideoLoading);

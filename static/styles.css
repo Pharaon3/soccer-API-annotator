@@ -1325,7 +1325,7 @@ body.page-review .board-video-controller {
 
 .timeline-live-readout {
   position: absolute;
-  top: 0.35rem;
+  top: -1.5rem;
   left: 0;
   transform: translate(-50%, 0);
   z-index: 16;
@@ -1356,7 +1356,7 @@ body.page-review .board-video-controller {
   position: absolute;
   left: 0;
   right: 0;
-  top: 72%;
+  top: 80%;
   transform: translateY(-50%);
   height: 0.7rem;
   display: flex;
@@ -1434,8 +1434,8 @@ body.page-review .board-video-controller {
 .video-seek::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 2px;
-  height: 100%;
-  margin-top: 0;
+  height: 80px;
+  margin-top: -30px;
   background: #ffffff;
   border: none;
   border-radius: 0;
@@ -1451,6 +1451,7 @@ body.page-review .board-video-controller {
 .video-seek::-moz-range-thumb {
   width: 2px;
   height: 100%;
+  transform: translateY(-30px);
   background: #ffffff;
   border: none;
   border-radius: 0;
