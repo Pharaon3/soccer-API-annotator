@@ -1009,21 +1009,21 @@ body.page-home {
   background: var(--label-row-2);
 }
 
-.label-btn[data-label="pass"] { background: #285ea8; }
-.label-btn[data-label="pass_received"] { background: #4f46e5; }
-.label-btn[data-label="take_on"] { background: #0f766e; }
-.label-btn[data-label="recovery"] { background: #2563eb; }
-.label-btn[data-label="tackle"] { background: #b45309; }
-.label-btn[data-label="aerial_duel"] { background: #0e7490; }
-.label-btn[data-label="save"] { background: #0f766e; }
-.label-btn[data-label="shot"] { background: #b91c1c; }
-.label-btn[data-label="foul"] { background: #9333ea; }
-.label-btn[data-label="goal"] { background: #16a34a; }
-.label-btn[data-label="interception"] { background: #1d4ed8; }
-.label-btn[data-label="substitution"] { background: #6d28d9; }
-.label-btn[data-label="clearance"] { background: #0369a1; }
-.label-btn[data-label="block"] { background: #334155; }
-.label-btn[data-label="ball_out_of_play"] { background: #7c2d12; }
+.label-btn[data-label="pass"] { background: #3b82f6; }
+.label-btn[data-label="pass_received"] { background: #6366f1; }
+.label-btn[data-label="take_on"] { background: #14b8a6; }
+.label-btn[data-label="recovery"] { background: #3b82f6; }
+.label-btn[data-label="tackle"] { background: #f59e0b; }
+.label-btn[data-label="aerial_duel"] { background: #06b6d4; }
+.label-btn[data-label="save"] { background: #14b8a6; }
+.label-btn[data-label="shot"] { background: #ef4444; }
+.label-btn[data-label="foul"] { background: #a855f7; }
+.label-btn[data-label="goal"] { background: #22c55e; }
+.label-btn[data-label="interception"] { background: #2563eb; }
+.label-btn[data-label="substitution"] { background: #8b5cf6; }
+.label-btn[data-label="clearance"] { background: #0ea5e9; }
+.label-btn[data-label="block"] { background: #64748b; }
+.label-btn[data-label="ball_out_of_play"] { background: #c2410c; }
 
 .label-btn:hover {
   filter: brightness(1.15);
@@ -1360,6 +1360,9 @@ body.page-review .board-video-controller {
   font-size: 1.5rem;
   font-weight: 700;
   color: #f8fafc;
+  background: #1a2332;
+  padding: 1px;
+  margin-top: 5px;
 }
 
 .timeline-live-time {
@@ -1450,9 +1453,9 @@ body.page-review .board-video-controller {
 
 .video-seek::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 2px;
-  height: 80px;
-  margin-top: -30px;
+  width: 1px;
+  height: 104px;
+  margin-top: -43px;
   background: #ffffff;
   border: none;
   border-radius: 0;
