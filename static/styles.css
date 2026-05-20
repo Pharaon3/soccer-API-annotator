@@ -1281,7 +1281,7 @@ body.page-review .board-video-controller {
 
 .timeline-live-readout {
   position: absolute;
-  top: -1.5rem;
+  top: calc(-1.5rem - 20px);
   left: 0;
   transform: translateX(-50%);
   z-index: 16;
@@ -1380,7 +1380,7 @@ body.page-review .board-video-controller {
   -webkit-appearance: none;
   width: 10px;
   height: 70px;
-  margin-top: -31px;
+  margin-top: -51px;
   background: #7dd3fc;
   border: 1px solid rgba(255, 255, 255, 0.95);
   border-radius: 999px;
