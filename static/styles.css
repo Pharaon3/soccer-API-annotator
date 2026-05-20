@@ -1009,6 +1009,22 @@ body.page-home {
   background: var(--label-row-2);
 }
 
+.label-btn[data-label="pass"] { background: #285ea8; }
+.label-btn[data-label="pass_received"] { background: #4f46e5; }
+.label-btn[data-label="take_on"] { background: #0f766e; }
+.label-btn[data-label="recovery"] { background: #2563eb; }
+.label-btn[data-label="tackle"] { background: #b45309; }
+.label-btn[data-label="aerial_duel"] { background: #0e7490; }
+.label-btn[data-label="save"] { background: #0f766e; }
+.label-btn[data-label="shot"] { background: #b91c1c; }
+.label-btn[data-label="foul"] { background: #9333ea; }
+.label-btn[data-label="goal"] { background: #16a34a; }
+.label-btn[data-label="interception"] { background: #1d4ed8; }
+.label-btn[data-label="substitution"] { background: #6d28d9; }
+.label-btn[data-label="clearance"] { background: #0369a1; }
+.label-btn[data-label="block"] { background: #334155; }
+.label-btn[data-label="ball_out_of_play"] { background: #7c2d12; }
+
 .label-btn:hover {
   filter: brightness(1.15);
   border-color: rgba(255, 255, 255, 0.45);
@@ -1472,7 +1488,6 @@ body.page-review .board-video-controller {
 .timeline-marker {
   --stack-y: 0px;
   position: absolute;
-  padding: 2px;
   top: 0;
   width: 2px;
   height: 16px;
@@ -1485,6 +1500,18 @@ body.page-review .board-video-controller {
   transform: translateY(calc(-1 * var(--stack-y)));
   transition: transform 0.12s ease, box-shadow 0.12s ease;
   z-index: 12;
+}
+
+.timeline-marker::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 16px;
+  height: 26px;
+  transform: translate(-50%, -50%);
+  background: transparent;
+  pointer-events: auto;
 }
 
 .timeline-marker:hover,

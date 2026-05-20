@@ -530,7 +530,7 @@ function markerStackOffsetAtTime(events, timeSec, index) {
   const sameFrame = events.filter((e) => roundTimeSec(e.time_sec) === t);
   const idx = sameFrame.findIndex((e) => e === events[index]);
   if (idx <= 0) return 0;
-  return idx * 7;
+  return idx * 13;
 }
 
 function seekToEvent(event) {
