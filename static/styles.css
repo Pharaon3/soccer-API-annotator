@@ -1501,7 +1501,7 @@ body.page-review .board-video-controller {
   height: 20px;
   margin-left: -3px;
   border-radius: 1px;
-  border: none;
+  border: 1px solid rgba(255, 255, 255, 0.95);
   pointer-events: auto;
   cursor: pointer;
   transform: translateY(calc(-1 * var(--stack-y)));

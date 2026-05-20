@@ -113,13 +113,13 @@ const PARTICIPANT_COLORS = [
 
 const LABEL_COLORS = {
   pass: "#285ea8",
-  pass_received: "#4f46e5",
+  pass_received: "#b91c1c",
   take_on: "#0f766e",
   recovery: "#2563eb",
   tackle: "#b45309",
   aerial_duel: "#0e7490",
   save: "#0f766e",
-  shot: "#b91c1c",
+  shot: "#4f46e5",
   foul: "#9333ea",
   goal: "#16a34a",
   interception: "#1d4ed8",
@@ -487,8 +487,7 @@ function replaceSelectedEventLabel(labelId) {
     return;
   }
   if (ev.label === labelId) {
-    removeSessionEvent(ev.id);
-    clearSelectedEvent();
+    // Keep unchanged when the same label key/button is used.
     return;
   }
   const oldLabel = ev.label;
@@ -528,12 +527,16 @@ function findMyEventAtTimeAndLabel(timeSec, labelId) {
   );
 }
 
-function markerStackOffsetAtTime(events, timeSec, index) {
-  const t = roundTimeSec(timeSec);
-  const sameFrame = events.filter((e) => roundTimeSec(e.time_sec) === t);
-  const idx = sameFrame.findIndex((e) => e === events[index]);
+function markerStackOffsetAtFrame(events, index) {
+  const target = events[index];
+  if (!target) return 0;
+  const targetFrame = target.frame ?? timeToFrame(target.time_sec);
+  const sameFrame = events.filter(
+    (e) => (e.frame ?? timeToFrame(e.time_sec)) === targetFrame
+  );
+  const idx = sameFrame.findIndex((e) => e === target);
   if (idx <= 0) return 0;
-  return idx * 13;
+  return idx * 16;
 }
 
 function seekToEvent(event) {
@@ -902,10 +905,15 @@ function startApiCountdownSecondsLeft(secondsLeft) {
         if (nextTestRoundAtSec) startTestNextCountdown(nextTestRoundAtSec);
       } else if (IS_ANNOTATOR_PAGE && !IS_PRACTICE_PAGE) {
         const finishedJobId = currentJobId;
+        // Mark job complete immediately so next-challenge countdown is shown.
+        currentJobId = null;
+        showApiNextIdle();
         clearPostDeadlineCleanupTimer();
         postDeadlineCleanupTimer = setTimeout(() => {
-          if (!currentJobId || currentJobId !== finishedJobId) return;
-          clearAnnotatorVideo(true);
+          // Skip cleanup only when a newer job is already active.
+          if (currentJobId && currentJobId !== finishedJobId) return;
+          clearAnnotatorVideo(false);
+          showApiNextIdle();
         }, ANNOTATOR_POST_DEADLINE_KEEP_MS);
       }
       return;
@@ -1216,14 +1224,19 @@ function applyJobTiming(data) {
   jobCoreGlobalEnd = data.segment_core_end_sec ?? bounds.coreEnd;
   jobPlayGlobalStart = bounds.playStart;
   jobPlayGlobalEnd = bounds.playEnd;
-  if (data.time_origin_sec != null) {
+  // Prefer core bounds for the global timeline track so it always reflects
+  // the user's assigned task window expanded as [x-1, y+1].
+  if (
+    data.segment_core_start_sec != null &&
+    data.segment_core_end_sec != null
+  ) {
+    jobPlayGlobalStart = Math.max(0, jobCoreGlobalStart - 1);
+    jobPlayGlobalEnd = Math.min(windowSec, jobCoreGlobalEnd + 1);
+  } else if (data.time_origin_sec != null) {
     jobPlayGlobalStart = data.time_origin_sec;
     if (data.segment_end_sec != null) {
       jobPlayGlobalEnd = data.time_origin_sec + data.segment_end_sec;
     }
-  } else if (data.segment_core_start_sec != null) {
-    jobPlayGlobalStart = Math.max(0, jobCoreGlobalStart - 1);
-    jobPlayGlobalEnd = Math.min(windowSec, jobCoreGlobalEnd + 1);
   }
   const playbackStart =
     data.start_offset_sec ?? (index === 1 ? jobPlayGlobalStart : 0);
@@ -1514,7 +1527,7 @@ function renderTimelineMarkers() {
       const mine = e.participant_id === myParticipantId;
       const labelName = labelDisplayName(e.label);
       const who = mine ? "You" : `Annotator #${e.participant_id}`;
-      const stackY = markerStackOffsetAtTime(sorted, e.time_sec, i);
+      const stackY = markerStackOffsetAtFrame(sorted, i);
       return `<button type="button" class="timeline-marker${mine ? " mine" : ""}" data-time="${e.time_sec}" data-frame="${e.frame}" data-label="${e.label}" data-label-name="${labelName}" data-who="${who}" data-event-id="${e.id ?? ""}" style="left:${pct}%;background:${color};--stack-y:${stackY}px" aria-label="${labelName}, frame ${e.frame}"></button>`;
     })
     .join("");
@@ -2267,6 +2280,18 @@ async function switchToRole(selectedRole) {
 function handleAnnotatorKeydown(e) {
   if (!isAnnotatingRole()) return;
 
+  if (e.code === "Delete" || e.key === "Delete") {
+    if (isAnnotatorShortcutBlocked(e)) return;
+    if (selectedEventId == null) return;
+    const selected = jobEvents.find(
+      (x) => x.id === selectedEventId && x.participant_id === myParticipantId
+    );
+    if (!selected || !canEditAnnotations()) return;
+    e.preventDefault();
+    removeSessionEvent(selectedEventId);
+    return;
+  }
+
   if (e.code === "Space") {
     if (isAnnotatorShortcutBlocked(e)) return;
     e.preventDefault();
@@ -2452,8 +2477,17 @@ videoSeek?.addEventListener("input", () => {
 timelineMarkers?.addEventListener("click", (e) => {
   const btn = e.target.closest(".timeline-marker");
   if (!btn) return;
+  const eventId = Number(btn.dataset.eventId);
+  if (Number.isFinite(eventId)) {
+    const ev = jobEvents.find((x) => x.id === eventId);
+    if (ev?.participant_id === myParticipantId && canEditAnnotations()) {
+      setSelectedEvent(eventId);
+      return;
+    }
+  }
   clearSelectedEvent();
   const globalTime = parseFloat(btn.dataset.time);
+  if (!Number.isFinite(globalTime)) return;
   video.pause();
   video.currentTime = localTimeFromGlobal(globalTime);
   updateVideoHud();
@@ -2629,7 +2663,7 @@ function renderBoardTimelineMarkers() {
       const labelName = labelDisplayName(e.label);
       const who = labelerName(boardLabelers, e.participant_id, e.user_id);
       const frame = e.frame ?? timeToFrame(e.time_sec);
-      const stackY = markerStackOffsetAtTime(sorted, e.time_sec, i);
+      const stackY = markerStackOffsetAtFrame(sorted, i);
       return `<button type="button" class="timeline-marker" data-time="${e.time_sec}" data-frame="${frame}" data-label="${e.label}" data-label-name="${labelName}" data-who="${who}" style="left:${pct}%;background:${color};--stack-y:${stackY}px" aria-label="${labelName}, frame ${frame}"></button>`;
     })
     .join("");
