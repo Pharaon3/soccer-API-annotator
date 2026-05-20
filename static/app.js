@@ -2707,11 +2707,6 @@ function renderReviewerEvents(events, labelers) {
   });
 }
 
-function boardVideoPlaybackUrl(item) {
-  const url = item?.video_url?.trim();
-  return url || "";
-}
-
 async function loadReviewerVideo(item, btn) {
   videoList?.querySelectorAll("button.active").forEach((b) => {
     b.classList.remove("active");
@@ -2722,16 +2717,14 @@ async function loadReviewerVideo(item, btn) {
   boardLabelers = {};
   renderBoardTimelineMarkers();
   showBoardVideoLoading();
-  const playbackUrl = IS_BOARD_PAGE
-    ? boardVideoPlaybackUrl(item)
-    : vid
-      ? new URL(serverVideoApiPath(vid), location.origin).href
-      : item.video_url || "";
-  if (IS_BOARD_PAGE && !playbackUrl) {
+  const playbackUrl = vid
+    ? new URL(serverVideoApiPath(vid), location.origin).href
+    : item.video_url || "";
+  if (IS_BOARD_PAGE && !vid) {
     hideBoardVideoLoading();
     reviewerVideo.removeAttribute("src");
-    reviewerMeta.innerHTML = `<div><strong>${vid}</strong></div><div class="reviewer-meta-url">No original video URL stored for this item.</div>`;
-    reviewerEvents.innerHTML = "<li><em>Cannot play video without source URL</em></li>";
+    reviewerMeta.innerHTML = `<div><strong>${vid || "unknown"}</strong></div><div class="reviewer-meta-url">No server video id available for this item.</div>`;
+    reviewerEvents.innerHTML = "<li><em>Cannot play video without server video id</em></li>";
     return;
   }
   reviewerVideo.src = playbackUrl;

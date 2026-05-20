@@ -1345,17 +1345,14 @@ body.page-review .board-video-controller {
 
 .video-seek::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 22px;
-  height: 26px;
+  width: 10px;
+  height: 22px;
   margin-top: -8px;
-  background: var(--accent);
-  border: none;
-  border-radius: 0;
-  clip-path: path(
-    "M11 2.25a7.75 7.75 0 1 1 0 15.5a7.75 7.75 0 1 1 0-15.5zm0 14.75 3.85 6.75H7.15L11 17z"
-  );
-  box-shadow: none;
-  filter: drop-shadow(0 0 0 2px #fff) drop-shadow(0 2px 6px rgba(0, 0, 0, 0.45));
+  background: #7dd3fc;
+  border: 1px solid rgba(255, 255, 255, 0.95);
+  border-radius: 999px;
+  clip-path: polygon(36% 0%, 64% 0%, 64% 74%, 100% 74%, 50% 100%, 0% 74%, 36% 74%);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
   cursor: grab;
 }
 
@@ -1364,16 +1361,13 @@ body.page-review .board-video-controller {
 }
 
 .video-seek::-moz-range-thumb {
-  width: 22px;
-  height: 26px;
-  background: var(--accent);
-  border: none;
-  border-radius: 0;
-  clip-path: path(
-    "M11 2.25a7.75 7.75 0 1 1 0 15.5a7.75 7.75 0 1 1 0-15.5zm0 14.75 3.85 6.75H7.15L11 17z"
-  );
-  box-shadow: none;
-  filter: drop-shadow(0 0 0 2px #fff) drop-shadow(0 2px 6px rgba(0, 0, 0, 0.45));
+  width: 10px;
+  height: 22px;
+  background: #7dd3fc;
+  border: 1px solid rgba(255, 255, 255, 0.95);
+  border-radius: 999px;
+  clip-path: polygon(36% 0%, 64% 0%, 64% 74%, 100% 74%, 50% 100%, 0% 74%, 36% 74%);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
   cursor: grab;
 }
 
@@ -1390,24 +1384,24 @@ body.page-review .board-video-controller {
   --stack-y: 0px;
   position: absolute;
   top: 50%;
-  width: 13px;
-  height: 13px;
-  margin-left: -6.5px;
-  margin-top: -6.5px;
-  border-radius: 3px;
-  border: 2px solid rgba(255, 255, 255, 0.9);
+  width: 3px;
+  height: 16px;
+  margin-left: -1.5px;
+  margin-top: -8px;
+  border-radius: 99px;
+  border: 1px solid rgba(255, 255, 255, 0.92);
   pointer-events: auto;
   cursor: pointer;
-  transform: rotate(45deg) translateY(calc(-1 * var(--stack-y)));
+  transform: translateY(calc(-1 * var(--stack-y)));
   transition: transform 0.12s ease, box-shadow 0.12s ease;
   z-index: 12;
 }
 
 .timeline-marker:hover,
 .timeline-marker:focus-visible {
-  transform: rotate(45deg) translateY(calc(-1 * var(--stack-y))) scale(1.35);
+  transform: translateY(calc(-1 * var(--stack-y))) scaleX(1.35);
   z-index: 14;
-  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.35);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.35);
 }
 
 .timeline-marker.mine {
