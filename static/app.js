@@ -379,17 +379,19 @@ function timelineSegmentsFromBounds(
 
 function updateTimelineZones() {
   if (!timelineTrack) return;
-  const windowSec = jobWindowSec || 30;
+  const timelineStart = jobPlayGlobalStart;
+  const timelineEnd = Math.max(jobPlayGlobalEnd, timelineStart + 0.001);
+  const timelineSec = timelineEnd - timelineStart;
   const segs = timelineSegmentsFromBounds(
-    jobPlayGlobalStart,
-    jobPlayGlobalEnd,
-    jobCoreGlobalStart,
-    jobCoreGlobalEnd,
-    windowSec
+    0,
+    timelineSec,
+    Math.max(0, jobCoreGlobalStart - timelineStart),
+    Math.min(timelineSec, jobCoreGlobalEnd - timelineStart),
+    timelineSec
   );
   timelineTrack.innerHTML = segs
     .map(({ from, to, type }) => {
-      const pct = ((to - from) / windowSec) * 100;
+      const pct = ((to - from) / timelineSec) * 100;
       return `<div class="timeline-zone timeline-zone-${type}" style="width:${pct}%"></div>`;
     })
     .join("");
@@ -407,18 +409,19 @@ function canEditAnnotations() {
 }
 
 function updateAnnotatorInteractionState() {
+  const hasVideo = !!video.src;
   const editable = canEditAnnotations();
-  if (videoSeek) videoSeek.disabled = !editable;
+  if (videoSeek) videoSeek.disabled = !hasVideo;
   if (videoTimeline) {
-    videoTimeline.classList.toggle("timeline-disabled", !editable);
-    videoTimeline.setAttribute("aria-disabled", editable ? "false" : "true");
+    videoTimeline.classList.toggle("timeline-disabled", !hasVideo);
+    videoTimeline.setAttribute("aria-disabled", hasVideo ? "false" : "true");
   }
   if (videoFrameDisplay) {
-    videoFrameDisplay.classList.toggle("disabled", !editable);
+    videoFrameDisplay.classList.toggle("disabled", !hasVideo);
     if (!video.src) videoFrameDisplay.textContent = "—";
   }
   if (videoTimeDisplay) {
-    videoTimeDisplay.classList.toggle("disabled", !editable);
+    videoTimeDisplay.classList.toggle("disabled", !hasVideo);
     if (!video.src) videoTimeDisplay.textContent = "—";
   }
   if (labelButtons) {
@@ -570,8 +573,8 @@ function seekAnnotatorByClientX(clientX) {
   const rect = videoTimeline.getBoundingClientRect();
   if (rect.width <= 0) return;
   const pct = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-  const windowSec = jobWindowSec || 30;
-  const globalT = pct * windowSec;
+  const timelineSec = Math.max(0.001, jobPlayGlobalEnd - jobPlayGlobalStart);
+  const globalT = jobPlayGlobalStart + pct * timelineSec;
   const clamped = Math.min(jobPlayGlobalEnd, Math.max(jobPlayGlobalStart, globalT));
   clearSelectedEvent();
   video.pause();
@@ -923,15 +926,10 @@ function startApiCountdownSecondsLeft(secondsLeft) {
         if (nextTestRoundAtSec) startTestNextCountdown(nextTestRoundAtSec);
       } else if (IS_ANNOTATOR_PAGE && !IS_PRACTICE_PAGE) {
         const finishedJobId = currentJobId;
-        // Mark job complete immediately so next-challenge countdown is shown.
-        currentJobId = null;
-        showApiNextIdle();
         clearPostDeadlineCleanupTimer();
         postDeadlineCleanupTimer = setTimeout(() => {
-          // Skip cleanup only when a newer job is already active.
-          if (currentJobId && currentJobId !== finishedJobId) return;
-          clearAnnotatorVideo(false);
-          showApiNextIdle();
+          if (currentJobId !== finishedJobId) return;
+          clearAnnotatorVideo(true);
         }, ANNOTATOR_POST_DEADLINE_KEEP_MS);
       }
       return;
@@ -1442,10 +1440,10 @@ function updateVideoHud() {
   if (videoFrameDisplay) videoFrameDisplay.textContent = String(frame);
   if (videoSeek) {
     seekSyncing = true;
-    videoSeek.min = "0";
-    videoSeek.max = String(jobWindowSec || 30);
+    videoSeek.min = String(jobPlayGlobalStart);
+    videoSeek.max = String(jobPlayGlobalEnd);
     videoSeek.value = String(
-      Math.min(jobWindowSec || 30, Math.max(0, globalT))
+      Math.min(jobPlayGlobalEnd, Math.max(jobPlayGlobalStart, globalT))
     );
     seekSyncing = false;
   }
@@ -1456,8 +1454,8 @@ function updateVideoHud() {
 
 function updateTimelineSeekRange() {
   if (!videoSeek) return;
-  videoSeek.min = "0";
-  videoSeek.max = String(jobWindowSec || 30);
+  videoSeek.min = String(jobPlayGlobalStart);
+  videoSeek.max = String(jobPlayGlobalEnd);
   videoSeek.step = "0.01";
   updateTimelineZones();
 }
@@ -1540,7 +1538,7 @@ function renderTimelineMarkers() {
     hideTimelineMarkerTooltipFor(videoTimeline);
     return;
   }
-  const windowSec = jobWindowSec || 30;
+  const timelineSec = Math.max(0.001, jobPlayGlobalEnd - jobPlayGlobalStart);
   const minePid = myParticipantId ?? 0;
   const sorted = jobEvents
     .slice()
@@ -1548,7 +1546,10 @@ function renderTimelineMarkers() {
     .sort((a, b) => a.time_sec - b.time_sec);
   timelineMarkers.innerHTML = sorted
     .map((e, i) => {
-      const pct = Math.min(100, Math.max(0, (e.time_sec / windowSec) * 100));
+      const pct = Math.min(
+        100,
+        Math.max(0, ((e.time_sec - jobPlayGlobalStart) / timelineSec) * 100)
+      );
       const color = LABEL_COLORS[e.label] || "#94a3b8";
       const mine = e.participant_id === myParticipantId;
       const labelName = labelDisplayName(e.label);
