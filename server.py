@@ -160,8 +160,8 @@ def public_video_path(video_id: str) -> str:
     return f"/api/video/{video_id}"
 
 
-def api_seconds_left(deadline_at: float) -> int:
-    """Seconds until the annotate API returns; always capped at ANNOTATE_DURATION_SEC."""
+def job_seconds_left(deadline_at: float) -> int:
+    """Seconds until the annotate job deadline; capped at ANNOTATE_DURATION_SEC."""
     remaining = deadline_at - time.time()
     return max(0, min(ANNOTATE_DURATION_SEC, int(math.ceil(remaining))))
 
@@ -705,7 +705,7 @@ class ConnectionManager:
             "annotator_total": x,
             "segment_window_sec": SEGMENT_WINDOW_SEC,
             "duration_sec": ANNOTATE_DURATION_SEC,
-            "seconds_left": api_seconds_left(job.deadline_at),
+            "seconds_left": job_seconds_left(job.deadline_at),
             **timing,
         }
 
@@ -880,7 +880,7 @@ class ConnectionManager:
             "job_id": state.job_id,
             "video_id": state.video_id,
             "duration_sec": ANNOTATE_DURATION_SEC,
-            "seconds_left": api_seconds_left(deadline_at),
+            "seconds_left": job_seconds_left(deadline_at),
             "video_file": public_video_path(state.video_id),
             "source_url": state.video_url,
             "annotator_id": session.annotator_id,
