@@ -160,6 +160,7 @@ let nextTestRoundAtSec = null;
 let loadedVideoJobId = null;
 let videoPollAbort = null;
 let annotationsLocked = false;
+let selectedEventId = null;
 
 const EVENT_DELETE_ICON = `<svg class="event-delete-icon" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M6 7h12v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V7zm3-4h6l1 1h4v2H4V4h4l1-1zM9 9v9h2V9H9zm4 0v9h2V9h-2z"/></svg>`;
 
@@ -413,6 +414,68 @@ function setAnnotationsLocked(locked) {
 
 function roundTimeSec(timeSec) {
   return Math.round(Number(timeSec) * 100) / 100;
+}
+
+function clearSelectedEvent() {
+  if (selectedEventId == null) return;
+  selectedEventId = null;
+  renderSessionEvents();
+}
+
+function setSelectedEvent(eventId) {
+  const ev = jobEvents.find((e) => e.id === eventId);
+  if (
+    !ev ||
+    ev.participant_id !== myParticipantId ||
+    !canEditAnnotations()
+  ) {
+    clearSelectedEvent();
+    if (ev) seekToEvent(ev);
+    return;
+  }
+  selectedEventId = eventId;
+  renderSessionEvents();
+  seekToEvent(ev);
+}
+
+function replaceSelectedEventLabel(labelId) {
+  const ev = jobEvents.find(
+    (e) => e.id === selectedEventId && e.participant_id === myParticipantId
+  );
+  if (!ev) {
+    clearSelectedEvent();
+    return;
+  }
+  if (ev.label === labelId) {
+    removeSessionEvent(ev.id);
+    clearSelectedEvent();
+    return;
+  }
+  const oldLabel = ev.label;
+  const time_sec = ev.time_sec;
+  const frame = ev.frame ?? timeToFrame(time_sec);
+  const pid = myParticipantId ?? 0;
+  ev.label = labelId;
+  ev.uid = `p${pid}-${roundTimeSec(time_sec)}-${labelId}`;
+  sessionEvents = jobEvents.filter((x) => x.participant_id === myParticipantId);
+  renderSessionEvents();
+  renderTimelineMarkers();
+  showOverlay(labelId, frame);
+  if (isPrivatePractice()) return;
+  send({
+    type: "annotation_remove",
+    job_id: currentJobId,
+    time_sec,
+    label: oldLabel,
+    uid: `p${pid}-${roundTimeSec(time_sec)}-${oldLabel}`,
+  });
+  send({
+    type: "annotation",
+    job_id: currentJobId,
+    label: labelId,
+    time_sec,
+    frame,
+  });
 }
 
 function findMyEventAtTimeAndLabel(timeSec, labelId) {
@@ -1380,6 +1443,7 @@ function clampPlaybackToSegment() {
 
 function stepFrame(delta) {
   if (!video.src) return;
+  clearSelectedEvent();
   const frameTime = 1 / videoFps;
   const { start, end } = playbackLocalBounds();
   video.pause();
@@ -1494,13 +1558,19 @@ function renderSessionEvents() {
       const who = mine ? "you" : `#${e.participant_id}`;
       const color = participantColor(e.participant_id);
       const style = `border-left: 4px solid ${color}`;
+      const selected = mine && e.id === selectedEventId;
       const text = `frame ${e.frame} · ${e.time_sec.toFixed(2)}s — ${labelName} (${who})`;
-      const gotoBtn = `<button type="button" class="event-item event-goto" data-event-id="${e.id}" data-time-sec="${e.time_sec}" title="Go to this frame">${text}</button>`;
+      const gotoTitle = mine && editable
+        ? selected
+          ? "Selected — click a label to change it"
+          : "Select to edit, or go to this frame"
+        : "Go to this frame";
+      const gotoBtn = `<button type="button" class="event-item event-goto${selected ? " event-goto-selected" : ""}" data-event-id="${e.id}" data-time-sec="${e.time_sec}" title="${gotoTitle}"${selected ? ' aria-pressed="true"' : ""}>${text}</button>`;
       const deleteBtn =
         mine && editable
           ? `<button type="button" class="event-delete" data-event-id="${e.id}" title="Delete annotation" aria-label="Delete annotation">${EVENT_DELETE_ICON}</button>`
           : "";
-      return `<li class="event-row${mine ? " event-row-mine" : ""}" style="${style}">${gotoBtn}${deleteBtn}</li>`;
+      return `<li class="event-row${mine ? " event-row-mine" : ""}${selected ? " event-row-selected" : ""}" style="${style}">${gotoBtn}${deleteBtn}</li>`;
     })
     .join("");
 }
@@ -1512,6 +1582,7 @@ function removeSessionEvent(eventId) {
   );
   if (idx === -1) return;
   const removed = jobEvents.splice(idx, 1)[0];
+  if (selectedEventId === eventId) selectedEventId = null;
   sessionEvents = jobEvents.filter((x) => x.participant_id === myParticipantId);
   renderSessionEvents();
   renderTimelineMarkers();
@@ -1550,6 +1621,10 @@ function applyLocalAnnotation(labelId, time_sec, frame) {
 
 function annotate(labelId) {
   if (!canEditAnnotations()) return;
+  if (selectedEventId != null) {
+    replaceSelectedEventLabel(labelId);
+    return;
+  }
   const time_sec = globalTimeFromVideo();
   if (!isInAnnotationRange(time_sec)) return;
   const frame = timeToFrame(time_sec);
@@ -1670,6 +1745,7 @@ async function startAnnotatorJob(data) {
   resetPresenceIdleTimer();
   jobEvents = [];
   sessionEvents = [];
+  selectedEventId = null;
   nextEventId = 0;
   applyJobTiming(data);
   if (data.annotator_id != null) myParticipantId = data.annotator_id;
@@ -1745,6 +1821,7 @@ function handleDuplicateCacheHit(data) {
   loadedVideoJobId = null;
   jobEvents = [];
   sessionEvents = [];
+  selectedEventId = null;
   renderSessionEvents();
   renderTimelineMarkers();
   hideVideoReady();
@@ -1787,6 +1864,7 @@ function resetPracticeJob() {
   loadedVideoJobId = null;
   jobEvents = [];
   sessionEvents = [];
+  selectedEventId = null;
   renderSessionEvents();
   renderTimelineMarkers();
   hideVideoReady();
@@ -2232,6 +2310,7 @@ btnPlayPause?.addEventListener("click", togglePlayPause);
 
 videoSeek?.addEventListener("input", () => {
   if (seekSyncing) return;
+  clearSelectedEvent();
   const globalT = parseFloat(videoSeek.value);
   const clamped = Math.min(
     jobPlayGlobalEnd,
@@ -2244,6 +2323,7 @@ videoSeek?.addEventListener("input", () => {
 timelineMarkers?.addEventListener("click", (e) => {
   const btn = e.target.closest(".timeline-marker");
   if (!btn) return;
+  clearSelectedEvent();
   const globalTime = parseFloat(btn.dataset.time);
   video.currentTime = localTimeFromGlobal(globalTime);
   updateVideoHud();
@@ -2262,8 +2342,19 @@ eventsList?.addEventListener("click", (e) => {
   const gotoBtn = e.target.closest(".event-goto");
   if (!gotoBtn) return;
   const eventId = Number(gotoBtn.dataset.eventId);
+  if (!Number.isFinite(eventId)) return;
   const ev = jobEvents.find((x) => x.id === eventId);
-  if (ev) seekToEvent(ev);
+  if (!ev) return;
+  if (ev.participant_id === myParticipantId && canEditAnnotations()) {
+    if (selectedEventId === eventId) {
+      clearSelectedEvent();
+      return;
+    }
+    setSelectedEvent(eventId);
+    return;
+  }
+  clearSelectedEvent();
+  seekToEvent(ev);
 });
 
 if (video) {
