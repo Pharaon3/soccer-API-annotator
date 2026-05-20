@@ -1379,8 +1379,8 @@ body.page-review .board-video-controller {
 .video-seek::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 10px;
-  height: 15px;
-  margin-top: -4px;
+  height: 70px;
+  margin-top: -31px;
   background: #7dd3fc;
   border: 1px solid rgba(255, 255, 255, 0.95);
   border-radius: 999px;
@@ -1395,7 +1395,7 @@ body.page-review .board-video-controller {
 
 .video-seek::-moz-range-thumb {
   width: 10px;
-  height: 15px;
+  height: 70px;
   background: #7dd3fc;
   border: 1px solid rgba(255, 255, 255, 0.95);
   border-radius: 999px;
