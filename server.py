@@ -428,11 +428,19 @@ def schedule_next_api_call(at: float | None = None) -> float:
     return _next_api_call_at
 
 
+def api_seconds_left() -> float | None:
+    if _next_api_call_at is None:
+        return None
+    return max(0.0, _next_api_call_at - time.time())
+
+
 def api_schedule_payload() -> dict[str, Any]:
     return {
         "type": "api_schedule",
         "next_call_at": _next_api_call_at,
+        "seconds_left": api_seconds_left(),
         "interval_sec": API_CALL_INTERVAL_SEC,
+        "server_now": time.time(),
     }
 
 
@@ -521,13 +529,15 @@ class ConnectionManager:
 
     async def notify_api_call_started(self, video_id: str) -> None:
         """Tell online annotators that a new API job was requested."""
-        next_at = schedule_next_api_call(time.time() + API_CALL_INTERVAL_SEC)
+        schedule_next_api_call(time.time() + API_CALL_INTERVAL_SEC)
         msg = json.dumps(
             {
                 "type": "api_call_started",
                 "video_id": video_id,
-                "next_call_at": next_at,
+                "next_call_at": _next_api_call_at,
+                "seconds_left": api_seconds_left(),
                 "interval_sec": API_CALL_INTERVAL_SEC,
+                "server_now": time.time(),
             }
         )
         dead: list[int] = []
@@ -1414,14 +1424,27 @@ async def _session_maintenance_loop() -> None:
         purge_expired_sessions()
 
 
+async def _api_schedule_tick_loop() -> None:
+    """Broadcast server-computed seconds_left so clients avoid clock skew."""
+    while True:
+        await asyncio.sleep(1)
+        if _next_api_call_at is None or not manager.annotators:
+            continue
+        try:
+            await manager.broadcast_api_schedule()
+        except Exception:
+            logger.exception("API schedule tick broadcast failed")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     del app
     validate_startup_config()
     test_task = asyncio.create_task(_test_scheduler_loop())
     session_task = asyncio.create_task(_session_maintenance_loop())
+    api_schedule_task = asyncio.create_task(_api_schedule_tick_loop())
     yield
-    for task in (test_task, session_task):
+    for task in (test_task, session_task, api_schedule_task):
         task.cancel()
         try:
             await task
@@ -1549,6 +1572,7 @@ async def health() -> dict[str, Any]:
         "participants_connected": manager.participant_count,
         "test_annotators_connected": manager.test_annotator_count,
         "next_api_call_at": _next_api_call_at,
+        "next_api_seconds_left": api_seconds_left(),
         "api_call_interval_sec": API_CALL_INTERVAL_SEC,
     }
     if last_annotate_timing is not None:
