@@ -59,8 +59,6 @@ const boardBtnPlayPause = document.getElementById("board-btn-play-pause");
 const boardVideoTimeDisplay = document.getElementById("board-video-time-display");
 const boardVideoFrameDisplay = document.getElementById("board-video-frame-display");
 const boardVideoLoading = document.getElementById("board-video-loading");
-const apiNextCountdown = document.getElementById("api-next-countdown");
-const apiNextValue = document.getElementById("api-next-value");
 const apiNextVideoCountdown = document.getElementById("api-next-video-countdown");
 const apiNextVideoValue = document.getElementById("api-next-video-value");
 
@@ -1035,26 +1033,25 @@ function stopApiNextCountdown(hide = false) {
     apiNextRafId = null;
   }
   apiNextDeadlinePerf = null;
-  if (!apiNextCountdown) return;
-  apiNextCountdown.classList.remove("active", "urgent", "critical");
+  if (!apiNextVideoCountdown) return;
+  apiNextVideoCountdown.classList.remove("active", "urgent", "critical");
   if (hide) {
-    apiNextCountdown.classList.add("hidden");
-    if (apiNextValue) apiNextValue.textContent = "—";
+    apiNextVideoCountdown.classList.add("hidden");
+    if (apiNextVideoValue) apiNextVideoValue.textContent = "—";
   }
 }
 
 function showApiNextIdle() {
-  if (!IS_ANNOTATOR_PAGE || !apiNextCountdown || !apiNextValue) return;
+  if (!IS_ANNOTATOR_PAGE || !apiNextVideoCountdown || !apiNextVideoValue) return;
   const storedNextCallAt = Number(sessionStorage.getItem(API_NEXT_DEADLINE_KEY));
   if (Number.isFinite(storedNextCallAt) && storedNextCallAt > Date.now() / 1000) {
     startApiNextCountdownAt(storedNextCallAt);
     return;
   }
   const visible = shouldShowNextChallengeTimer();
-  apiNextCountdown.classList.toggle("hidden", !visible);
-  apiNextCountdown.classList.add("active");
+  apiNextVideoCountdown.classList.toggle("hidden", !visible);
+  apiNextVideoCountdown.classList.add("active");
   if (visible) {
-    apiNextValue.textContent = "—";
     showAnnotatorIdleCountdown("—");
   } else {
     hideAnnotatorIdleCountdown();
@@ -1067,22 +1064,21 @@ function startApiNextCountdown(durationSec = API_CALL_INTERVAL_SEC) {
 }
 
 function startApiNextCountdownAt(nextCallAtSec) {
-  if (!IS_ANNOTATOR_PAGE || !apiNextCountdown || !apiNextValue) return;
+  if (!IS_ANNOTATOR_PAGE || !apiNextVideoCountdown || !apiNextVideoValue) return;
   const targetMs = Number(nextCallAtSec) * 1000;
   if (!Number.isFinite(targetMs)) return;
   sessionStorage.setItem(API_NEXT_DEADLINE_KEY, String(Number(nextCallAtSec)));
   stopApiNextCountdown();
   apiNextWarned5Min = false;
   apiNextWarned1Min = false;
-  apiNextCountdown.classList.add("active");
+  apiNextVideoCountdown.classList.add("active");
 
   const tick = () => {
     const visible = shouldShowNextChallengeTimer();
-    apiNextCountdown.classList.toggle("hidden", !visible);
+    apiNextVideoCountdown.classList.toggle("hidden", !visible);
     const leftSec = Math.max(0, (targetMs - Date.now()) / 1000);
     if (leftSec <= 0) {
-      if (visible) apiNextValue.textContent = "0:00";
-      apiNextCountdown.classList.remove("urgent", "critical");
+      apiNextVideoCountdown.classList.remove("urgent", "critical");
       if (visible) showAnnotatorIdleCountdown("0:00");
       else hideAnnotatorIdleCountdown();
       apiNextRafId = null;
@@ -1090,13 +1086,12 @@ function startApiNextCountdownAt(nextCallAtSec) {
     }
     const display = formatApiCountdown(leftSec);
     if (visible) {
-      apiNextValue.textContent = display;
       showAnnotatorIdleCountdown(display);
     } else {
       hideAnnotatorIdleCountdown();
     }
-    apiNextCountdown.classList.toggle("urgent", leftSec <= API_NEXT_WARN_5_MIN_SEC);
-    apiNextCountdown.classList.toggle("critical", leftSec <= API_NEXT_WARN_1_MIN_SEC);
+    apiNextVideoCountdown.classList.toggle("urgent", leftSec <= API_NEXT_WARN_5_MIN_SEC);
+    apiNextVideoCountdown.classList.toggle("critical", leftSec <= API_NEXT_WARN_1_MIN_SEC);
 
     if (leftSec <= API_NEXT_WARN_5_MIN_SEC && !apiNextWarned5Min) {
       apiNextWarned5Min = true;
@@ -1149,7 +1144,6 @@ function handleApiCallStarted(data) {
       jobInfo.textContent = `API job started · ${data.video_id} · waiting for video…`;
     }
     hideAnnotatorIdleCountdown();
-    apiNextCountdown?.classList.add("hidden");
     showVideoReady();
   }
 }
@@ -2222,7 +2216,6 @@ function handleMessage(data) {
           showApiNextIdle();
         } else {
           hideAnnotatorIdleCountdown();
-          apiNextCountdown?.classList.add("hidden");
         }
         if (pendingAnnotateJob && !pendingAnnotateJob.api_pending) {
           const job = applyRoleAckToJob(pendingAnnotateJob, data);
@@ -2332,7 +2325,6 @@ async function switchToRole(selectedRole) {
   if (selectedRole !== "annotator" && selectedRole !== "test") {
     clearAnnotatorVideo(false);
     hideAnnotatorIdleCountdown();
-    apiNextCountdown?.classList.add("hidden");
   }
   role = selectedRole;
   send({ type: "set_role", role: selectedRole });
