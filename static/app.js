@@ -15,6 +15,7 @@ const IS_PRACTICE_PAGE = PAGE === "practice" || PAGE === "train";
 const IS_ANNOTATOR_PAGE = PAGE === "annotator";
 const IS_BOARD_PAGE = PAGE === "board" || PAGE === "review";
 const PENDING_ANNOTATE_KEY = "pendingAnnotateJob";
+const API_NEXT_DEADLINE_KEY = "apiNextCallAt";
 
 let wsAuthed = false;
 let wsConnectResolve = null;
@@ -994,13 +995,9 @@ function notifyApiCallRequested(videoId) {
 
 function formatApiCountdown(secLeft) {
   const total = Math.max(0, Math.ceil(secLeft));
-  const h = Math.floor(total / 3600);
-  const m = Math.floor((total % 3600) / 60);
+  const m = Math.floor(total / 60);
   const s = total % 60;
-  if (h > 0) {
-    return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
-  }
-  return `${m}:${String(s).padStart(2, "0")}`;
+  return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
 function showAnnotatorIdleCountdown(text = "—") {
@@ -1048,7 +1045,11 @@ function stopApiNextCountdown(hide = false) {
 
 function showApiNextIdle() {
   if (!IS_ANNOTATOR_PAGE || !apiNextCountdown || !apiNextValue) return;
-  stopApiNextCountdown();
+  const storedNextCallAt = Number(sessionStorage.getItem(API_NEXT_DEADLINE_KEY));
+  if (Number.isFinite(storedNextCallAt) && storedNextCallAt > Date.now() / 1000) {
+    startApiNextCountdownAt(storedNextCallAt);
+    return;
+  }
   const visible = shouldShowNextChallengeTimer();
   apiNextCountdown.classList.toggle("hidden", !visible);
   apiNextCountdown.classList.add("active");
@@ -1069,6 +1070,7 @@ function startApiNextCountdownAt(nextCallAtSec) {
   if (!IS_ANNOTATOR_PAGE || !apiNextCountdown || !apiNextValue) return;
   const targetMs = Number(nextCallAtSec) * 1000;
   if (!Number.isFinite(targetMs)) return;
+  sessionStorage.setItem(API_NEXT_DEADLINE_KEY, String(Number(nextCallAtSec)));
   stopApiNextCountdown();
   apiNextWarned5Min = false;
   apiNextWarned1Min = false;
@@ -1130,6 +1132,7 @@ function redirectToAnnotatorForApiCall(data) {
 
 function handleApiCallStarted(data) {
   notifyApiCallRequested(data.video_id);
+  sessionStorage.removeItem(API_NEXT_DEADLINE_KEY);
   if (data.next_call_at != null) {
     startApiNextCountdownAt(data.next_call_at);
   } else {
@@ -1149,6 +1152,19 @@ function handleApiCallStarted(data) {
     apiNextCountdown?.classList.add("hidden");
     showVideoReady();
   }
+}
+
+function handleApiSchedule(data) {
+  if (!IS_ANNOTATOR_PAGE) return;
+  if (data.next_call_at != null) {
+    startApiNextCountdownAt(data.next_call_at);
+    return;
+  }
+  if (data.seconds_left != null) {
+    startApiNextCountdown(data.seconds_left);
+    return;
+  }
+  showApiNextIdle();
 }
 
 function showVideoReady() {
@@ -2238,6 +2254,9 @@ function handleMessage(data) {
       break;
     case "api_call_started":
       handleApiCallStarted(data);
+      break;
+    case "api_schedule":
+      handleApiSchedule(data);
       break;
     case "annotate_start":
       handleAnnotateStart(data);

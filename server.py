@@ -1840,6 +1840,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     )
                     if active_jobs:
                         await manager.send_active_annotate_job(participant_session)
+                    else:
+                        await manager.send_api_schedule(websocket)
                 elif role == "reviewer":
                     participant_session = await manager.register_reviewer(
                         websocket, user_id=session_user_id
