@@ -1669,13 +1669,18 @@ function clearAnnotatorVideo(showNextTimer = false) {
   clearPostDeadlineCleanupTimer();
   stopVideoPoll();
   stopVideoHudLoop();
+  stopApiCountdown(true);
   hideVideoReady();
   video.pause();
   video.removeAttribute("src");
   video.load();
   updatePlayPauseButton();
   updateVideoHud();
+  jobEvents = [];
+  sessionEvents = [];
+  selectedEventId = null;
   timelineMarkers.innerHTML = "";
+  renderSessionEvents();
   hideTimelineMarkerTooltipFor(videoTimeline);
   clearSelectedEvent();
   currentJobId = null;
