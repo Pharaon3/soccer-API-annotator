@@ -111,21 +111,21 @@ const PARTICIPANT_COLORS = [
 ];
 
 const LABEL_COLORS = {
-  pass: "#2563eb",
-  pass_received: "#7c3aed",
-  recovery: "#059669",
-  tackle: "#dc2626",
-  interception: "#ea580c",
-  ball_out_of_play: "#475569",
-  clearance: "#0891b2",
-  take_on: "#db2777",
-  substitution: "#ca8a04",
-  block: "#4f46e5",
-  aerial_duel: "#0d9488",
+  pass: "#285ea8",
+  pass_received: "#4f46e5",
+  take_on: "#0f766e",
+  recovery: "#2563eb",
+  tackle: "#b45309",
+  aerial_duel: "#0e7490",
+  save: "#0f766e",
   shot: "#b91c1c",
-  save: "#16a34a",
-  foul: "#c2410c",
-  goal: "#eab308",
+  foul: "#9333ea",
+  goal: "#16a34a",
+  interception: "#1d4ed8",
+  substitution: "#6d28d9",
+  clearance: "#0369a1",
+  block: "#334155",
+  ball_out_of_play: "#7c2d12",
 };
 
 let ws = null;
@@ -1637,7 +1637,7 @@ function renderSessionEvents() {
       const labelName = labelDisplayName(e.label);
       const mine = e.participant_id === myParticipantId;
       const who = mine ? "you" : `#${e.participant_id}`;
-      const color = participantColor(e.participant_id);
+      const color = LABEL_COLORS[e.label] || "#94a3b8";
       const style = `border-left: 4px solid ${color}`;
       const selected = mine && e.id === selectedEventId;
       const text = `frame ${e.frame} · ${e.time_sec.toFixed(2)}s — ${labelName} (${who})`;
@@ -2801,7 +2801,7 @@ function renderReviewerEvents(events, labelers) {
     .sort((a, b) => Number(a.time_sec) - Number(b.time_sec))
     .map((e) => {
       const pid = e.participant_id ?? 1;
-      const color = participantColor(pid);
+      const color = LABEL_COLORS[e.label] || "#94a3b8";
       const who = labelerName(labelers, pid, e.user_id);
       const labelName = labelDisplayName(e.label);
       const frame = e.frame ?? timeToFrame(e.time_sec);
