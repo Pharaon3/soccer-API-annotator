@@ -59,8 +59,8 @@ for d in (VIDEOS_DIR, ANNOTATIONS_DIR, STATIC_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 ANNOTATE_DURATION_SEC = 22
-CACHE_DELAY_MIN_SEC = 10
-CACHE_DELAY_MAX_SEC = 15
+CACHE_HIT_RESPONSE_DELAY_MIN_SEC = 20.0
+CACHE_HIT_RESPONSE_DELAY_MAX_SEC = 22.0
 SEGMENT_WINDOW_SEC = 30
 SEGMENT_PADDING_SEC = 1.0
 FIRST_PART_EXTRA_SEC = 2.0
@@ -1043,8 +1043,21 @@ async def _run_annotate_job_body(
     return payload
 
 
+async def wait_cache_hit_response_delay(request_started_at: float) -> float:
+    """Wait until a random 20–22s has elapsed since the API request started."""
+    target_sec = random.uniform(
+        CACHE_HIT_RESPONSE_DELAY_MIN_SEC,
+        CACHE_HIT_RESPONSE_DELAY_MAX_SEC,
+    )
+    remaining = target_sec - (time.time() - request_started_at)
+    if remaining > 0:
+        await asyncio.sleep(remaining)
+    return target_sec
+
+
 async def run_annotate_with_dedup(video_url: str) -> tuple[dict[str, Any], str | None]:
     """Run a fresh annotate job; cancel and return cache if duplicate found in parallel."""
+    request_started_at = time.time()
     video_id = video_id_from_url(video_url)
     cancel_event = asyncio.Event()
     video_ready = asyncio.Event()
@@ -1068,16 +1081,19 @@ async def run_annotate_with_dedup(video_url: str) -> tuple[dict[str, Any], str |
                         await job_task
                     except asyncio.CancelledError:
                         pass
+                    target_delay_sec = await wait_cache_hit_response_delay(request_started_at)
                     await manager.notify_duplicate_cache_hit(
                         requested_video_id=video_id,
                         matched_video_id=matched_id,
                         reason=reason,
                     )
                     logger.info(
-                        "Annotate cache hit url=%s reason=%s matched=%s",
+                        "Annotate cache hit url=%s reason=%s matched=%s target_delay_sec=%.2f elapsed=%.2fs",
                         video_url,
                         reason,
                         matched_id,
+                        target_delay_sec,
+                        time.time() - request_started_at,
                     )
                     return payload, reason
             await asyncio.sleep(0.05)
