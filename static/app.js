@@ -2,7 +2,7 @@ const DEFAULT_FPS = 25;
 const FIRST_PART_EXTRA_SEC = 3;
 const ARROW_HOLD_DELAY_MS = 60;
 const ARROW_HOLD_INTERVAL_MS = 28;
-const API_RESPONSE_SEC = 22;
+const API_RESPONSE_FALLBACK_SEC = 26;
 const API_CALL_INTERVAL_SEC = 3600;
 const API_NEXT_WARN_5_MIN_SEC = 5 * 60;
 const API_NEXT_WARN_1_MIN_SEC = 60;
@@ -888,7 +888,7 @@ function startApiCountdownSecondsLeft(secondsLeft) {
   countdownRafId = requestAnimationFrame(tick);
 }
 
-function startApiCountdown(durationSec = API_RESPONSE_SEC) {
+function startApiCountdown(durationSec = API_RESPONSE_FALLBACK_SEC) {
   startApiCountdownSecondsLeft(durationSec);
 }
 
@@ -1069,10 +1069,10 @@ function redirectToAnnotatorForApiJob(data) {
 function normalizeApiSecondsLeft(data) {
   const raw = data.seconds_left ?? data.duration_sec;
   const n = Number(raw);
-  if (Number.isFinite(n) && n > 0 && n <= API_RESPONSE_SEC + 1) {
+  if (Number.isFinite(n) && n > 0 && n <= 600) {
     return Math.ceil(n);
   }
-  return API_RESPONSE_SEC;
+  return API_RESPONSE_FALLBACK_SEC;
 }
 
 function beginJobCountdown(data) {
@@ -1188,7 +1188,7 @@ function stopVideoPoll() {
   }
 }
 
-function waitForServerVideo(videoId, secondsLeft = API_RESPONSE_SEC) {
+function waitForServerVideo(videoId, secondsLeft = API_RESPONSE_FALLBACK_SEC) {
   stopVideoPoll();
 
   const path = serverVideoApiPath(videoId);

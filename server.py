@@ -58,9 +58,47 @@ STATIC_DIR = ROOT / "static"
 for d in (VIDEOS_DIR, ANNOTATIONS_DIR, STATIC_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
-ANNOTATE_DURATION_SEC = 22
-CACHE_HIT_RESPONSE_DELAY_MIN_SEC = 20.0
-CACHE_HIT_RESPONSE_DELAY_MAX_SEC = 22.0
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r, using default %.2f", name, raw, default)
+        return default
+
+
+ANNOTATE_DURATION_MIN_SEC = _env_float("ANNOTATE_DURATION_MIN_SEC", 25.0)
+ANNOTATE_DURATION_MAX_SEC = _env_float("ANNOTATE_DURATION_MAX_SEC", 26.0)
+if ANNOTATE_DURATION_MAX_SEC < ANNOTATE_DURATION_MIN_SEC:
+    logger.warning(
+        "ANNOTATE_DURATION_MAX_SEC %.2f < ANNOTATE_DURATION_MIN_SEC %.2f; clamping max to min",
+        ANNOTATE_DURATION_MAX_SEC,
+        ANNOTATE_DURATION_MIN_SEC,
+    )
+    ANNOTATE_DURATION_MAX_SEC = ANNOTATE_DURATION_MIN_SEC
+
+CACHE_HIT_RESPONSE_DELAY_MIN_SEC = _env_float(
+    "CACHE_HIT_RESPONSE_DELAY_MIN_SEC", ANNOTATE_DURATION_MIN_SEC
+)
+CACHE_HIT_RESPONSE_DELAY_MAX_SEC = _env_float(
+    "CACHE_HIT_RESPONSE_DELAY_MAX_SEC", ANNOTATE_DURATION_MAX_SEC
+)
+if CACHE_HIT_RESPONSE_DELAY_MAX_SEC < CACHE_HIT_RESPONSE_DELAY_MIN_SEC:
+    logger.warning(
+        "CACHE_HIT_RESPONSE_DELAY_MAX_SEC %.2f < CACHE_HIT_RESPONSE_DELAY_MIN_SEC %.2f; clamping max to min",
+        CACHE_HIT_RESPONSE_DELAY_MAX_SEC,
+        CACHE_HIT_RESPONSE_DELAY_MIN_SEC,
+    )
+    CACHE_HIT_RESPONSE_DELAY_MAX_SEC = CACHE_HIT_RESPONSE_DELAY_MIN_SEC
+
+
+def random_annotate_duration_sec() -> float:
+    return random.uniform(ANNOTATE_DURATION_MIN_SEC, ANNOTATE_DURATION_MAX_SEC)
+
+
 PRESENCE_IDLE_SEC = 15 * 60
 SEGMENT_WINDOW_SEC = 30
 SEGMENT_PADDING_SEC = 1.0
@@ -160,10 +198,10 @@ def public_video_path(video_id: str) -> str:
     return f"/api/video/{video_id}"
 
 
-def job_seconds_left(deadline_at: float) -> int:
-    """Seconds until the annotate job deadline; capped at ANNOTATE_DURATION_SEC."""
+def job_seconds_left(deadline_at: float, duration_sec: float) -> int:
+    """Seconds until the annotate job deadline; capped at this job duration."""
     remaining = deadline_at - time.time()
-    return max(0, min(ANNOTATE_DURATION_SEC, int(math.ceil(remaining))))
+    return max(0, min(int(math.ceil(duration_sec)), int(math.ceil(remaining))))
 
 
 def _random_confidence() -> float:
@@ -321,6 +359,7 @@ class ActiveJob:
     video_id: str
     started_at: float
     deadline_at: float
+    duration_sec: float
     segment_total: int = 1
     rank_by_participant_id: dict[int, int] = field(default_factory=dict)
     dispatch_session_ids: list[int] = field(default_factory=list)
@@ -710,8 +749,8 @@ class ConnectionManager:
             "annotator_index": rank,
             "annotator_total": x,
             "segment_window_sec": SEGMENT_WINDOW_SEC,
-            "duration_sec": ANNOTATE_DURATION_SEC,
-            "seconds_left": job_seconds_left(job.deadline_at),
+            "duration_sec": round(job.duration_sec, 2),
+            "seconds_left": job_seconds_left(job.deadline_at, job.duration_sec),
             **timing,
         }
 
@@ -879,14 +918,15 @@ class ConnectionManager:
         session: AnnotatorSession,
         *,
         deadline_at: float,
+        duration_sec: float,
     ) -> dict[str, Any]:
         x = state.segment_total
         return {
             "type": "test_start",
             "job_id": state.job_id,
             "video_id": state.video_id,
-            "duration_sec": ANNOTATE_DURATION_SEC,
-            "seconds_left": job_seconds_left(deadline_at),
+            "duration_sec": round(duration_sec, 2),
+            "seconds_left": job_seconds_left(deadline_at, duration_sec),
             "video_file": public_video_path(state.video_id),
             "source_url": state.video_url,
             "annotator_id": session.annotator_id,
@@ -896,7 +936,9 @@ class ConnectionManager:
             **playback_timing_for_rank(rank, x),
         }
 
-    async def broadcast_test_job(self, state: TestJobState, *, deadline_at: float) -> None:
+    async def broadcast_test_job(
+        self, state: TestJobState, *, deadline_at: float, duration_sec: float
+    ) -> None:
         dead: list[int] = []
         for aid in sorted(
             state.rank_by_participant_id, key=state.rank_by_participant_id.get
@@ -909,7 +951,11 @@ class ConnectionManager:
                 await session.websocket.send_text(
                     json.dumps(
                         self._test_start_payload(
-                            state, rank, session, deadline_at=deadline_at
+                                state,
+                                rank,
+                                session,
+                                deadline_at=deadline_at,
+                                duration_sec=duration_sec,
                         )
                     )
                 )
@@ -1205,7 +1251,8 @@ async def run_annotate_job(
     video_ready: asyncio.Event | None = None,
 ) -> dict[str, Any]:
     started_at = time.time()
-    deadline_at = started_at + ANNOTATE_DURATION_SEC
+    duration_sec = random_annotate_duration_sec()
+    deadline_at = started_at + duration_sec
     video_id = video_id_from_url(video_url)
     job_id = f"{video_id}-{int(started_at * 1000)}"
     _, _, video_path = cache_paths(video_id)
@@ -1223,6 +1270,7 @@ async def run_annotate_job(
         video_id=video_id,
         started_at=started_at,
         deadline_at=deadline_at,
+        duration_sec=duration_sec,
         segment_total=x,
         rank_by_participant_id=rank_by_id,
     )
@@ -1329,7 +1377,7 @@ async def _run_annotate_job_body(
 
 
 async def wait_cache_hit_response_delay(request_started_at: float) -> float:
-    """Wait until a random 20–22s has elapsed since the API request started."""
+    """Wait until a random configured delay has elapsed since API request start."""
     target_sec = random.uniform(
         CACHE_HIT_RESPONSE_DELAY_MIN_SEC,
         CACHE_HIT_RESPONSE_DELAY_MAX_SEC,
@@ -1476,10 +1524,13 @@ async def run_test_round() -> None:
         await manager.broadcast_test_schedule()
         return
 
-    test_deadline = time.time() + ANNOTATE_DURATION_SEC
+    test_duration_sec = random_annotate_duration_sec()
+    test_deadline = time.time() + test_duration_sec
     try:
         logger.info("Test job %s: %d users", job_id, state.segment_total)
-        await manager.broadcast_test_job(state, deadline_at=test_deadline)
+        await manager.broadcast_test_job(
+            state, deadline_at=test_deadline, duration_sec=test_duration_sec
+        )
         remaining = test_deadline - time.time()
         if remaining > 0:
             await asyncio.sleep(remaining)
