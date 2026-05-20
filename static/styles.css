@@ -772,6 +772,32 @@ body.page-home {
   font-size: 2rem;
 }
 
+.api-next-countdown {
+  border-color: #2dd4bf;
+}
+
+.api-next-countdown .countdown-value {
+  color: #5eead4;
+  font-size: 1.35rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.api-next-countdown.urgent {
+  border-color: #fbbf24;
+}
+
+.api-next-countdown.urgent .countdown-value {
+  color: #fbbf24;
+}
+
+.api-next-countdown.critical {
+  border-color: #f87171;
+}
+
+.api-next-countdown.critical .countdown-value {
+  color: #f87171;
+}
+
 .reviewer-actions {
   display: flex;
   gap: 0.5rem;

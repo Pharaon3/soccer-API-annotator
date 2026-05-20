@@ -66,6 +66,8 @@ SEGMENT_WINDOW_SEC = 30
 SEGMENT_PADDING_SEC = 1.0
 FIRST_PART_EXTRA_SEC = 2.0
 PRACTICE_INTERVAL_SEC = 30
+API_CALL_INTERVAL_SEC = int(os.getenv("API_CALL_INTERVAL_SEC", "3600"))
+_next_api_call_at: float | None = None
 # Segment proxy encode: 480p height, 25 fps, H.264 ultrafast
 SEGMENT_SCALE_FILTER = "scale=-2:480"
 SEGMENT_FPS = 25
@@ -417,6 +419,23 @@ def _should_redirect_unauthenticated(request: Request) -> bool:
     return "text/html" in accept
 
 
+def schedule_next_api_call(at: float | None = None) -> float:
+    """Schedule the next expected external API call."""
+    global _next_api_call_at
+    _next_api_call_at = (
+        float(at) if at is not None else time.time() + API_CALL_INTERVAL_SEC
+    )
+    return _next_api_call_at
+
+
+def api_schedule_payload() -> dict[str, Any]:
+    return {
+        "type": "api_schedule",
+        "next_call_at": _next_api_call_at,
+        "interval_sec": API_CALL_INTERVAL_SEC,
+    }
+
+
 class ConnectionManager:
     def __init__(self) -> None:
         self.connections: set[WebSocket] = set()
@@ -485,6 +504,43 @@ class ConnectionManager:
         self.reviewers.add(ws)
         await self._broadcast_annotator_count()
         return session
+
+    async def send_api_schedule(self, ws: WebSocket) -> None:
+        await ws.send_text(json.dumps(api_schedule_payload()))
+
+    async def broadcast_api_schedule(self) -> None:
+        msg = json.dumps(api_schedule_payload())
+        dead: list[int] = []
+        for aid, session in self.annotators.items():
+            try:
+                await session.websocket.send_text(msg)
+            except Exception:
+                dead.append(aid)
+        for aid in dead:
+            await self._drop_participant(aid)
+
+    async def notify_api_call_started(self, video_id: str) -> None:
+        """Tell online annotators that a new API job was requested."""
+        next_at = schedule_next_api_call(time.time() + API_CALL_INTERVAL_SEC)
+        msg = json.dumps(
+            {
+                "type": "api_call_started",
+                "video_id": video_id,
+                "next_call_at": next_at,
+                "interval_sec": API_CALL_INTERVAL_SEC,
+            }
+        )
+        dead: list[int] = []
+        for aid, session in list(self.annotators.items()):
+            if not session.online:
+                continue
+            try:
+                await session.websocket.send_text(msg)
+            except Exception:
+                dead.append(aid)
+        for aid in dead:
+            await self._drop_participant(aid)
+        await self.broadcast_api_schedule()
 
     async def send_test_schedule(self, ws: WebSocket) -> None:
         if self._next_test_round_at is None:
@@ -1430,7 +1486,9 @@ async def annotate(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     api_started_at = time.time()
+    video_id = video_id_from_url(video_url)
     logger.info("Annotate API request received url=%s", video_url)
+    await manager.notify_api_call_started(video_id)
 
     try:
         result, cache_reason = await run_annotate_with_dedup(video_url)
@@ -1490,6 +1548,8 @@ async def health() -> dict[str, Any]:
         "online_annotators_connected": manager.online_annotator_count,
         "participants_connected": manager.participant_count,
         "test_annotators_connected": manager.test_annotator_count,
+        "next_api_call_at": _next_api_call_at,
+        "api_call_interval_sec": API_CALL_INTERVAL_SEC,
     }
     if last_annotate_timing is not None:
         payload["last_job_video_timing"] = last_annotate_timing.to_dict()
@@ -1621,6 +1681,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             }
                         )
                     )
+                    await manager.send_api_schedule(websocket)
                     if active_jobs:
                         await manager.send_active_annotate_job(annotator_session)
                 elif role == "reviewer":

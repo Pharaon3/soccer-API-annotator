@@ -3,6 +3,9 @@ const FIRST_PART_EXTRA_SEC = 3;
 const ARROW_HOLD_DELAY_MS = 60;
 const ARROW_HOLD_INTERVAL_MS = 28;
 const API_RESPONSE_SEC = 22;
+const API_CALL_INTERVAL_SEC = 3600;
+const API_NEXT_WARN_5_MIN_SEC = 5 * 60;
+const API_NEXT_WARN_1_MIN_SEC = 60;
 const VIDEO_POLL_INTERVAL_MS = 2000;
 const PRESENCE_IDLE_MS = 15 * 60 * 1000;
 const PRESENCE_ACTIVE_RECHECK_MS = 30 * 1000;
@@ -54,6 +57,8 @@ const boardBtnPlayPause = document.getElementById("board-btn-play-pause");
 const boardVideoTimeDisplay = document.getElementById("board-video-time-display");
 const boardVideoFrameDisplay = document.getElementById("board-video-frame-display");
 const boardVideoLoading = document.getElementById("board-video-loading");
+const apiNextCountdown = document.getElementById("api-next-countdown");
+const apiNextValue = document.getElementById("api-next-value");
 
 let boardVideosCache = [];
 const boardDateExpandState = new Map();
@@ -63,6 +68,10 @@ let boardWindowSec = 30;
 let boardSeekSyncing = false;
 let boardFrameRafId = null;
 let boardTimelineTooltip = null;
+let nextApiCallAtSec = null;
+let apiNextRafId = null;
+let apiNextWarned5Min = false;
+let apiNextWarned1Min = false;
 const btnPlayPause = document.getElementById("btn-play-pause");
 const videoTimeDisplay = document.getElementById("video-time-display");
 const videoFrameDisplay = document.getElementById("video-frame-display");
@@ -580,6 +589,7 @@ function showScreen(screen) {
   if (!isAnnotatorView(screen)) {
     stopApiCountdown(true);
     if (IS_PRACTICE_PAGE) stopTestNextCountdown(true);
+    if (IS_ANNOTATOR_PAGE) stopApiNextCountdown(true);
   }
 }
 
@@ -763,18 +773,131 @@ function requestNotificationPermission() {
   }
 }
 
+function showDesktopNotification(title, body, tag = "annotator") {
+  if (!("Notification" in window) || Notification.permission !== "granted") {
+    return;
+  }
+  try {
+    const n = new Notification(title, { body, tag });
+    n.onclick = () => {
+      window.focus();
+      n.close();
+    };
+  } catch {
+    /* ignore */
+  }
+}
+
 function notifyNewAnnotationJob() {
-  const title = "New annotation job";
-  const body = "READY — switching to annotator…";
-  if ("Notification" in window && Notification.permission === "granted") {
-    try {
-      const n = new Notification(title, { body, tag: "annotate-job" });
-      n.onclick = () => {
-        window.focus();
-        n.close();
-      };
-    } catch {
-      /* ignore */
+  showDesktopNotification(
+    "Annotation ready",
+    "Your video segment is ready — start labeling.",
+    "annotate-job-ready"
+  );
+}
+
+function notifyApiCallRequested(videoId) {
+  showDesktopNotification(
+    "New API annotation job",
+    videoId
+      ? `Video «${videoId}» was requested. Get ready to annotate.`
+      : "A new annotation job was requested.",
+    "api-call-started"
+  );
+}
+
+function formatApiCountdown(secLeft) {
+  const total = Math.max(0, Math.ceil(secLeft));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function stopApiNextCountdown(hide = false) {
+  if (apiNextRafId !== null) {
+    cancelAnimationFrame(apiNextRafId);
+    apiNextRafId = null;
+  }
+  if (!apiNextCountdown) return;
+  apiNextCountdown.classList.remove("active", "urgent", "critical");
+  if (hide) {
+    apiNextCountdown.classList.add("hidden");
+    if (apiNextValue) apiNextValue.textContent = "—";
+  }
+}
+
+function startApiNextCountdown(nextCallAtSec) {
+  if (!IS_ANNOTATOR_PAGE || !apiNextCountdown || !apiNextValue) return;
+  if (!nextCallAtSec) {
+    stopApiNextCountdown(true);
+    return;
+  }
+  stopApiNextCountdown();
+  nextApiCallAtSec = Number(nextCallAtSec);
+  apiNextWarned5Min = false;
+  apiNextWarned1Min = false;
+  apiNextCountdown.classList.remove("hidden");
+  apiNextCountdown.classList.add("active");
+
+  const tick = () => {
+    const leftSec = nextApiCallAtSec - Date.now() / 1000;
+    if (leftSec <= 0) {
+      apiNextValue.textContent = "0:00";
+      apiNextCountdown.classList.remove("urgent", "critical");
+      apiNextRafId = null;
+      return;
+    }
+    apiNextValue.textContent = formatApiCountdown(leftSec);
+    apiNextCountdown.classList.toggle("urgent", leftSec <= API_NEXT_WARN_5_MIN_SEC);
+    apiNextCountdown.classList.toggle("critical", leftSec <= API_NEXT_WARN_1_MIN_SEC);
+
+    if (leftSec <= API_NEXT_WARN_5_MIN_SEC && !apiNextWarned5Min) {
+      apiNextWarned5Min = true;
+      showDesktopNotification(
+        "Next API call soon",
+        "About 5 minutes until the next annotation request is expected.",
+        "api-next-5m"
+      );
+    }
+    if (leftSec <= API_NEXT_WARN_1_MIN_SEC && !apiNextWarned1Min) {
+      apiNextWarned1Min = true;
+      showDesktopNotification(
+        "Next API call in 1 minute",
+        "Stay online — a new annotation request is expected soon.",
+        "api-next-1m"
+      );
+    }
+    apiNextRafId = requestAnimationFrame(tick);
+  };
+  apiNextRafId = requestAnimationFrame(tick);
+}
+
+function handleApiSchedule(data) {
+  if (data.next_call_at) {
+    startApiNextCountdown(data.next_call_at);
+    return;
+  }
+  stopApiNextCountdown();
+  if (IS_ANNOTATOR_PAGE && apiNextCountdown && apiNextValue) {
+    apiNextCountdown.classList.remove("hidden");
+    apiNextCountdown.classList.add("active");
+    apiNextValue.textContent = "—";
+  }
+}
+
+function handleApiCallStarted(data) {
+  notifyApiCallRequested(data.video_id);
+  if (data.next_call_at) {
+    startApiNextCountdown(data.next_call_at);
+  }
+  if (data.video_id && role === "annotator") {
+    showConnectionStatus(`API job started: ${data.video_id}`, true);
+    if (jobInfo && !currentJobId) {
+      jobInfo.textContent = `API job started · ${data.video_id} · waiting for video…`;
     }
   }
 }
@@ -1564,6 +1687,7 @@ function handleMessage(data) {
           stopApiCountdown(true);
         }
         showScreen(annotatorScreen);
+        requestNotificationPermission();
         if (pendingAnnotateJob) {
           const job = applyRoleAckToJob(pendingAnnotateJob, data);
           pendingAnnotateJob = null;
@@ -1594,6 +1718,12 @@ function handleMessage(data) {
         const online = data.online_count ?? data.count;
         sessionInfo.textContent = `Annotators: ${online} online / ${data.count} connected`;
       }
+      break;
+    case "api_schedule":
+      if (IS_ANNOTATOR_PAGE) handleApiSchedule(data);
+      break;
+    case "api_call_started":
+      if (IS_ANNOTATOR_PAGE) handleApiCallStarted(data);
       break;
     case "annotate_start":
       handleAnnotateStart(data);
@@ -1789,6 +1919,7 @@ async function bootApp() {
       sessionStorage.removeItem(PENDING_ANNOTATE_KEY);
     }
     showConnectionStatus("Connecting…");
+    requestNotificationPermission();
     await enterRole("annotator");
     return;
   }
