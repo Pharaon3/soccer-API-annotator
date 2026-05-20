@@ -1189,6 +1189,29 @@ function handleAnnotateStart(data) {
   goToAnnotatorForJob(data);
 }
 
+function handleDuplicateCacheHit(data) {
+  const msg =
+    data.message ||
+    "This video was already annotated. Stop working — your labels will not be saved.";
+  showConnectionStatus(msg, false);
+  setStatusMessage(msg, jobInfo);
+  stopApiCountdown(true);
+  stopVideoPoll();
+  stopVideoHudLoop();
+  setAnnotationsLocked(true);
+  currentJobId = null;
+  loadedVideoJobId = null;
+  jobEvents = [];
+  sessionEvents = [];
+  renderSessionEvents();
+  renderTimelineMarkers();
+  hideVideoReady();
+  video.pause();
+  video.removeAttribute("src");
+  updatePlayPauseButton();
+  updateVideoHud();
+}
+
 function handleTestStart(data) {
   goToTestJob(data);
 }
@@ -1290,13 +1313,7 @@ function handleMessage(data) {
       }
       break;
     case "duplicate_cache_hit":
-      if (data.message) {
-        showConnectionStatus(data.message, true);
-      }
-      stopApiCountdown(true);
-      setAnnotationsLocked(true);
-      currentJobId = null;
-      loadedVideoJobId = null;
+      handleDuplicateCacheHit(data);
       break;
     default:
       break;

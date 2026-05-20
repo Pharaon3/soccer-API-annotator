@@ -670,13 +670,13 @@ class ConnectionManager:
     ) -> None:
         if reason == "same_id":
             detail = (
-                f"Video id «{requested_video_id}» was already annotated. "
-                "Returning saved results — no new round started."
+                f"Video «{requested_video_id}» was already annotated. "
+                "Stop working — no new round will be saved."
             )
         else:
             detail = (
-                f"This file matches earlier video «{matched_video_id}» (same content hash). "
-                "Returning saved results — no new round started."
+                f"This file matches earlier video «{matched_video_id}» (same content). "
+                "Stop working — it was already annotated."
             )
         msg = json.dumps(
             {
@@ -1059,6 +1059,22 @@ async def run_annotate_with_dedup(video_url: str) -> tuple[dict[str, Any], str |
     """Run a fresh annotate job; cancel and return cache if duplicate found in parallel."""
     request_started_at = time.time()
     video_id = video_id_from_url(video_url)
+
+    same_id_payload = lookup_cached_by_video_id(video_id)
+    if same_id_payload is not None:
+        await manager.notify_duplicate_cache_hit(
+            requested_video_id=video_id,
+            matched_video_id=video_id,
+            reason="same_id",
+        )
+        await wait_cache_hit_response_delay(request_started_at)
+        logger.info(
+            "Annotate cache hit (same id) url=%s elapsed=%.2fs",
+            video_url,
+            time.time() - request_started_at,
+        )
+        return same_id_payload, "same_id"
+
     cancel_event = asyncio.Event()
     video_ready = asyncio.Event()
 
@@ -1081,12 +1097,12 @@ async def run_annotate_with_dedup(video_url: str) -> tuple[dict[str, Any], str |
                         await job_task
                     except asyncio.CancelledError:
                         pass
-                    target_delay_sec = await wait_cache_hit_response_delay(request_started_at)
                     await manager.notify_duplicate_cache_hit(
                         requested_video_id=video_id,
                         matched_video_id=matched_id,
                         reason=reason,
                     )
+                    target_delay_sec = await wait_cache_hit_response_delay(request_started_at)
                     logger.info(
                         "Annotate cache hit url=%s reason=%s matched=%s target_delay_sec=%.2f elapsed=%.2fs",
                         video_url,
