@@ -1314,11 +1314,23 @@ function localTimeFromGlobal(globalT) {
   return globalT - (jobTimeOrigin || 0);
 }
 
+function placeTimelineReadout(timelineEl, seekEl, readoutEl) {
+  if (!timelineEl || !seekEl || !readoutEl) return;
+  const min = parseFloat(seekEl.min || "0");
+  const max = parseFloat(seekEl.max || "0");
+  const value = parseFloat(seekEl.value || "0");
+  const range = max - min;
+  const ratio = range > 0 ? (value - min) / range : 0;
+  const clamped = Math.min(1, Math.max(0, ratio));
+  const x = clamped * timelineEl.clientWidth;
+  readoutEl.style.left = `${x}px`;
+}
+
 function updateVideoHud() {
   if (!video.src) return;
   const globalT = globalTimeFromVideo();
   const frame = timeToFrame(globalT);
-  if (videoTimeDisplay) videoTimeDisplay.textContent = formatTime(globalT);
+  if (videoTimeDisplay) videoTimeDisplay.textContent = `${formatTime(globalT)}s`;
   if (videoFrameDisplay) videoFrameDisplay.textContent = `frame ${frame}`;
   if (videoSeek) {
     seekSyncing = true;
@@ -1329,6 +1341,7 @@ function updateVideoHud() {
     );
     seekSyncing = false;
   }
+  placeTimelineReadout(videoTimeline, videoSeek, videoTimeline?.querySelector(".timeline-live-readout"));
   updatePlayPauseButton();
 }
 
@@ -2420,7 +2433,7 @@ function updateBoardVideoHud() {
   if (!reviewerVideo?.src) return;
   const t = reviewerVideo.currentTime || 0;
   const frame = timeToFrame(t);
-  if (boardVideoTimeDisplay) boardVideoTimeDisplay.textContent = formatTime(t);
+  if (boardVideoTimeDisplay) boardVideoTimeDisplay.textContent = `${formatTime(t)}s`;
   if (boardVideoFrameDisplay) {
     boardVideoFrameDisplay.textContent = `frame ${frame}`;
   }
@@ -2431,6 +2444,11 @@ function updateBoardVideoHud() {
     boardVideoSeek.value = String(Math.min(boardWindowSec || 30, Math.max(0, t)));
     boardSeekSyncing = false;
   }
+  placeTimelineReadout(
+    boardVideoTimeline,
+    boardVideoSeek,
+    boardVideoTimeline?.querySelector(".timeline-live-readout")
+  );
   updateBoardPlayPauseButton();
 }
 

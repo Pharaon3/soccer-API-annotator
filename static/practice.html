@@ -52,10 +52,12 @@
             <div class="video-controller">
               <div class="video-controller-controls">
                 <button type="button" id="btn-play-pause" class="ctrl-btn" title="Play / Pause" aria-label="Play / Pause">▶</button>
-                <span id="video-time-display" class="time-display">0:00.00</span>
-                <span id="video-frame-display" class="frame-display">frame 0</span>
               </div>
               <div class="video-timeline" id="video-timeline">
+                <div class="timeline-live-readout" aria-hidden="true">
+                  <span id="video-frame-display" class="timeline-live-frame">frame 0</span>
+                  <span id="video-time-display" class="timeline-live-time">0:00.00s</span>
+                </div>
                 <div id="timeline-track" class="timeline-track" aria-hidden="true"></div>
                 <input type="range" id="video-seek" class="video-seek" min="0" max="30" step="0.01" value="0" />
                 <div id="timeline-markers" class="timeline-markers"></div>
