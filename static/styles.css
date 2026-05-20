@@ -909,6 +909,7 @@ body.page-review .reviewer-main {
 
 body.page-board .board-video-wrap,
 body.page-review .board-video-wrap {
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
   background: #000;
@@ -917,6 +918,44 @@ body.page-review .board-video-wrap {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+.board-video-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 12, 20, 0.72);
+  backdrop-filter: blur(2px);
+  border-radius: 10px;
+}
+
+.board-video-loading.hidden {
+  display: none;
+}
+
+.board-video-loading-card {
+  text-align: center;
+  padding: 1rem 1.25rem;
+}
+
+.board-video-spinner {
+  width: 44px;
+  height: 44px;
+  margin: 0 auto 0.75rem;
+  border: 3px solid rgba(255, 255, 255, 0.12);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: app-boot-spin 0.75s linear infinite;
+}
+
+.board-video-loading-text {
+  margin: 0;
+  color: #cbd5e1;
+  font-size: 0.9rem;
+  font-weight: 600;
 }
 
 body.page-board #reviewer-video,
@@ -1400,7 +1439,7 @@ body.annotations-locked .label-btn {
 
 .reviewer-layout {
   display: grid;
-  grid-template-columns: 280px 1fr 260px;
+  grid-template-columns: 340px 1fr 260px;
   gap: 0;
   flex: 1;
   min-height: 0;
@@ -1760,7 +1799,7 @@ body.annotations-locked .label-btn {
 
 @media (max-width: 1100px) {
   .reviewer-layout {
-    grid-template-columns: 240px 1fr 220px;
+    grid-template-columns: 300px 1fr 220px;
   }
 }
 

@@ -53,6 +53,7 @@ const boardTimelineTrack = document.getElementById("board-timeline-track");
 const boardBtnPlayPause = document.getElementById("board-btn-play-pause");
 const boardVideoTimeDisplay = document.getElementById("board-video-time-display");
 const boardVideoFrameDisplay = document.getElementById("board-video-frame-display");
+const boardVideoLoading = document.getElementById("board-video-loading");
 
 let boardVideosCache = [];
 const boardDateExpandState = new Map();
@@ -1891,6 +1892,18 @@ if (video) {
   });
 }
 
+function showBoardVideoLoading() {
+  if (!boardVideoLoading) return;
+  boardVideoLoading.classList.remove("hidden");
+  boardVideoLoading.setAttribute("aria-busy", "true");
+}
+
+function hideBoardVideoLoading() {
+  if (!boardVideoLoading) return;
+  boardVideoLoading.classList.add("hidden");
+  boardVideoLoading.setAttribute("aria-busy", "false");
+}
+
 function updateBoardPlayPauseButton() {
   if (!boardBtnPlayPause || !reviewerVideo) return;
   boardBtnPlayPause.textContent = reviewerVideo.paused ? "▶" : "⏸";
@@ -2028,6 +2041,12 @@ function bindBoardPlayerHandlers() {
   boardBtnPlayPause?.addEventListener("click", toggleBoardPlayPause);
   reviewerVideo?.addEventListener("play", updateBoardPlayPauseButton);
   reviewerVideo?.addEventListener("pause", updateBoardPlayPauseButton);
+  reviewerVideo?.addEventListener("loadstart", showBoardVideoLoading);
+  reviewerVideo?.addEventListener("waiting", showBoardVideoLoading);
+  reviewerVideo?.addEventListener("canplay", hideBoardVideoLoading);
+  reviewerVideo?.addEventListener("loadeddata", hideBoardVideoLoading);
+  reviewerVideo?.addEventListener("error", hideBoardVideoLoading);
+  reviewerVideo?.addEventListener("emptied", showBoardVideoLoading);
   reviewerVideo?.addEventListener("loadedmetadata", () => {
     if (reviewerVideo.duration && Number.isFinite(reviewerVideo.duration)) {
       videoFps = DEFAULT_FPS;
@@ -2035,6 +2054,9 @@ function bindBoardPlayerHandlers() {
     updateBoardTimelineSeekRange();
     renderBoardTimelineMarkers();
     updateBoardVideoHud();
+    if (reviewerVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      hideBoardVideoLoading();
+    }
   });
 
   boardVideoSeek?.addEventListener("input", () => {
@@ -2219,6 +2241,7 @@ async function loadReviewerVideo(item, btn) {
   boardEvents = [];
   boardLabelers = {};
   renderBoardTimelineMarkers();
+  showBoardVideoLoading();
   reviewerVideo.src = vid
     ? new URL(serverVideoApiPath(vid), location.origin).href
     : item.video_url || "";
@@ -2236,8 +2259,12 @@ async function loadReviewerVideo(item, btn) {
       updateBoardTimelineSeekRange();
       updateBoardVideoHud();
     }
+    if (reviewerVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+      hideBoardVideoLoading();
+    }
     startBoardVideoHudLoop();
   } catch {
+    hideBoardVideoLoading();
     reviewerEvents.innerHTML = "<li>Failed to load annotations</li>";
     boardEvents = [];
     renderBoardTimelineMarkers();
