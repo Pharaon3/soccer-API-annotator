@@ -4,6 +4,8 @@ const ARROW_HOLD_DELAY_MS = 60;
 const ARROW_HOLD_INTERVAL_MS = 28;
 const API_RESPONSE_SEC = 22;
 const VIDEO_POLL_INTERVAL_MS = 2000;
+const PRESENCE_IDLE_MS = 15 * 60 * 1000;
+const PRESENCE_ACTIVE_RECHECK_MS = 30 * 1000;
 const PAGE = document.body.dataset.page || "";
 const IS_PRACTICE_PAGE = PAGE === "practice" || PAGE === "train";
 const IS_ANNOTATOR_PAGE = PAGE === "annotator";
@@ -40,6 +42,11 @@ const reviewerVideo = document.getElementById("reviewer-video");
 const videoList = document.getElementById("video-list");
 const reviewerEvents = document.getElementById("reviewer-events");
 const reviewerMeta = document.getElementById("reviewer-meta");
+const videoDateFilter = document.getElementById("video-date-filter");
+const btnClearDateFilter = document.getElementById("btn-clear-date-filter");
+
+let boardVideosCache = [];
+const boardDateExpandState = new Map();
 const btnPlayPause = document.getElementById("btn-play-pause");
 const videoTimeDisplay = document.getElementById("video-time-display");
 const videoFrameDisplay = document.getElementById("video-frame-display");
@@ -53,6 +60,14 @@ const timelineMarkers = document.getElementById("timeline-markers");
 const videoTimeline = document.getElementById("video-timeline");
 const timelineTrack = document.getElementById("timeline-track");
 let timelineTooltip = null;
+
+const btnPresence = document.getElementById("btn-presence");
+const presenceOverlay = document.getElementById("presence-overlay");
+const btnPresenceConfirm = document.getElementById("btn-presence-confirm");
+
+let presenceOnline = true;
+let presenceIdleTimer = null;
+let presenceListenersBound = false;
 
 const PARTICIPANT_COLORS = [
   "#3d8bfd",
@@ -133,6 +148,87 @@ async function loadLabelConfig() {
 function participantColor(participantId) {
   const idx = Math.max(0, (participantId || 1) - 1);
   return PARTICIPANT_COLORS[idx % PARTICIPANT_COLORS.length];
+}
+
+function usesGroupedVideoList() {
+  return !!videoDateFilter;
+}
+
+function dateKeyFromSavedAt(savedAt) {
+  if (!savedAt) return "unknown";
+  const d = new Date(Number(savedAt) * 1000);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function todayDateKey() {
+  return dateKeyFromSavedAt(Date.now() / 1000);
+}
+
+function isTodayDateKey(dateKey) {
+  return dateKey === todayDateKey();
+}
+
+function formatDateGroupHeader(dateKey) {
+  if (dateKey === "unknown") return "Unknown date";
+  const [y, m, d] = dateKey.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  const label = dt.toLocaleDateString(undefined, {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  if (isTodayDateKey(dateKey)) return `Today · ${label}`;
+  const today = new Date();
+  const yesterday = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate() - 1
+  );
+  if (dateKey === dateKeyFromSavedAt(yesterday.getTime() / 1000)) {
+    return `Yesterday · ${label}`;
+  }
+  return label;
+}
+
+function formatSavedTime(savedAt) {
+  if (!savedAt) return "—";
+  return new Date(Number(savedAt) * 1000).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function isDateGroupExpanded(dateKey, filterDate) {
+  if (filterDate) return dateKey === filterDate;
+  if (boardDateExpandState.has(dateKey)) {
+    return boardDateExpandState.get(dateKey);
+  }
+  return isTodayDateKey(dateKey);
+}
+
+function labelerName(labelers, participantId, userId) {
+  if (userId) return userId;
+  const key = String(participantId ?? "");
+  return labelers?.[key] ?? labelers?.[participantId] ?? `Annotator #${participantId}`;
+}
+
+function formatLabelerList(labelerNames) {
+  if (!labelerNames?.length) return "Unknown labeler";
+  return labelerNames.join(", ");
+}
+
+function createVideoListButton(video, onSelect) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  const time = formatSavedTime(video.saved_at);
+  const labelers = formatLabelerList(video.labeler_names);
+  btn.innerHTML = `<strong class="video-list-id">${video.video_id}</strong><span class="video-list-meta">${video.event_count} events · ${time}</span><span class="video-list-labelers">${labelers}</span>`;
+  btn.addEventListener("click", () => onSelect(video, btn));
+  return btn;
 }
 
 function computeSegmentCoreBounds(index, total, windowSec = 30) {
@@ -256,6 +352,135 @@ function clearConnectionStatus() {
   showConnectionStatus("", false);
 }
 
+function tracksPresenceRole() {
+  return role === "annotator" || role === "test";
+}
+
+function isActivelyAnnotating() {
+  return !!currentJobId && !annotationsLocked;
+}
+
+function updatePresenceUi() {
+  if (!btnPresence) return;
+  btnPresence.classList.toggle("online", presenceOnline);
+  btnPresence.classList.toggle("offline", !presenceOnline);
+  btnPresence.textContent = presenceOnline ? "Online" : "I am Online";
+  btnPresence.setAttribute("aria-pressed", presenceOnline ? "true" : "false");
+}
+
+function showPresenceOverlay() {
+  presenceOverlay?.classList.remove("hidden");
+  document.body.classList.add("presence-prompt-open");
+}
+
+function hidePresenceOverlay() {
+  presenceOverlay?.classList.add("hidden");
+  document.body.classList.remove("presence-prompt-open");
+}
+
+function sendPresenceOnline(online) {
+  send({ type: "set_online", online: !!online });
+}
+
+function setPresenceOnline(online, { notifyServer = true } = {}) {
+  presenceOnline = !!online;
+  updatePresenceUi();
+  if (notifyServer) {
+    sendPresenceOnline(presenceOnline);
+  }
+  if (presenceOnline) {
+    hidePresenceOverlay();
+    if (isActivelyAnnotating()) {
+      setAnnotationsLocked(false);
+    }
+    resetPresenceIdleTimer();
+    showConnectionStatus("", false);
+  } else {
+    showPresenceOverlay();
+    setAnnotationsLocked(true);
+    if (presenceIdleTimer) {
+      clearTimeout(presenceIdleTimer);
+      presenceIdleTimer = null;
+    }
+  }
+}
+
+function onPresenceIdleTimeout() {
+  presenceIdleTimer = null;
+  if (!tracksPresenceRole()) return;
+  if (isActivelyAnnotating()) {
+    resetPresenceIdleTimer();
+    return;
+  }
+  if (!presenceOnline) return;
+  setPresenceOnline(false);
+}
+
+function resetPresenceIdleTimer() {
+  if (presenceIdleTimer) {
+    clearTimeout(presenceIdleTimer);
+    presenceIdleTimer = null;
+  }
+  if (!tracksPresenceRole() || !presenceOnline) return;
+  if (isActivelyAnnotating()) {
+    presenceIdleTimer = setTimeout(resetPresenceIdleTimer, PRESENCE_ACTIVE_RECHECK_MS);
+    return;
+  }
+  presenceIdleTimer = setTimeout(onPresenceIdleTimeout, PRESENCE_IDLE_MS);
+}
+
+function onPresenceUserActivity() {
+  if (!tracksPresenceRole() || !presenceOnline) return;
+  if (presenceOverlay && !presenceOverlay.classList.contains("hidden")) return;
+  resetPresenceIdleTimer();
+}
+
+function bindPresenceActivityListeners() {
+  if (presenceListenersBound) return;
+  presenceListenersBound = true;
+  const events = ["mousedown", "keydown", "touchstart", "wheel", "click", "scroll"];
+  events.forEach((name) => {
+    document.addEventListener(name, onPresenceUserActivity, { passive: true });
+  });
+}
+
+function initPresenceTracking(online = true) {
+  if (!btnPresence && !presenceOverlay) return;
+  bindPresenceActivityListeners();
+  presenceOnline = online !== false;
+  updatePresenceUi();
+  if (presenceOnline) {
+    hidePresenceOverlay();
+    resetPresenceIdleTimer();
+  } else {
+    showPresenceOverlay();
+    setAnnotationsLocked(true);
+  }
+}
+
+function stopPresenceTracking() {
+  if (presenceIdleTimer) {
+    clearTimeout(presenceIdleTimer);
+    presenceIdleTimer = null;
+  }
+  hidePresenceOverlay();
+}
+
+function bindPresenceControls() {
+  btnPresence?.addEventListener("click", () => {
+    if (!presenceOnline) {
+      setPresenceOnline(true);
+    }
+  });
+  btnPresenceConfirm?.addEventListener("click", () => {
+    setPresenceOnline(true);
+  });
+}
+
+function handlePresenceStatus(data) {
+  setPresenceOnline(data.online === true, { notifyServer: false });
+}
+
 function wsUrl() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${location.host}/ws`;
@@ -356,6 +581,7 @@ async function apiFetch(url, options = {}) {
 }
 
 async function logout() {
+  stopPresenceTracking();
   clearSession();
   role = null;
   try {
@@ -511,6 +737,7 @@ function normalizeApiSecondsLeft(data) {
 
 function beginJobCountdown(data) {
   startApiCountdownSecondsLeft(normalizeApiSecondsLeft(data));
+  resetPresenceIdleTimer();
 }
 
 function jobSecondsLeft(data) {
@@ -1131,6 +1358,7 @@ async function startAnnotatorJob(data) {
   currentJobId = data.job_id;
   loadedVideoJobId = data.job_id;
   setAnnotationsLocked(false);
+  resetPresenceIdleTimer();
   jobEvents = [];
   sessionEvents = [];
   nextEventId = 0;
@@ -1285,11 +1513,20 @@ function handleMessage(data) {
         video.pause();
         video.removeAttribute("src");
       }
+      if (data.role === "annotator" || data.role === "test") {
+        initPresenceTracking(data.online !== false);
+      } else {
+        stopPresenceTracking();
+      }
       hideRoleModal();
+      break;
+    case "presence_status":
+      handlePresenceStatus(data);
       break;
     case "annotator_count":
       if (sessionInfo && isAnnotatingRole()) {
-        sessionInfo.textContent = `Connected annotators: ${data.count}`;
+        const online = data.online_count ?? data.count;
+        sessionInfo.textContent = `Annotators: ${online} online / ${data.count} connected`;
       }
       break;
     case "annotate_start":
@@ -1342,6 +1579,9 @@ async function switchToRole(selectedRole) {
     return;
   }
   hideRoleModal();
+  if (tracksPresenceRole()) {
+    stopPresenceTracking();
+  }
   role = selectedRole;
   send({ type: "set_role", role: selectedRole });
 }
@@ -1457,6 +1697,10 @@ async function bootApp() {
     btn.addEventListener("click", logout);
   });
 
+  if (IS_ANNOTATOR_PAGE || IS_PRACTICE_PAGE) {
+    bindPresenceControls();
+  }
+
   if (IS_PRACTICE_PAGE) {
     document.body.classList.add("no-scroll");
     buildLabelButtons();
@@ -1502,6 +1746,13 @@ async function bootApp() {
 function bindReviewHandlers() {
   document.getElementById("btn-refresh-videos")?.addEventListener("click", () => {
     send({ type: "list_videos" });
+  });
+  videoDateFilter?.addEventListener("change", () => {
+    renderVideoList(boardVideosCache);
+  });
+  btnClearDateFilter?.addEventListener("click", () => {
+    if (videoDateFilter) videoDateFilter.value = "";
+    renderVideoList(boardVideosCache);
   });
 }
 
@@ -1568,68 +1819,161 @@ if (video) {
 
 function renderVideoList(videos) {
   if (!videoList) return;
+  boardVideosCache = videos || [];
   videoList.innerHTML = "";
-  if (!videos.length) {
+  if (!boardVideosCache.length) {
     videoList.innerHTML = "<li><em>No saved videos yet</em></li>";
     return;
   }
-  videos.forEach((v) => {
-    const li = document.createElement("li");
-    const btn = document.createElement("button");
-    const date = v.saved_at
-      ? new Date(v.saved_at * 1000).toLocaleString()
-      : "—";
-    btn.innerHTML = `<strong>${v.video_id}</strong><br>${v.event_count} events · ${date}`;
-    btn.addEventListener("click", () => loadReviewerVideo(v, btn));
-    li.appendChild(btn);
-    videoList.appendChild(li);
+
+  if (!usesGroupedVideoList()) {
+    boardVideosCache.forEach((v) => {
+      const li = document.createElement("li");
+      li.appendChild(
+        createVideoListButton(v, (video, btn) => loadReviewerVideo(video, btn))
+      );
+      videoList.appendChild(li);
+    });
+    return;
+  }
+
+  const filterDate = videoDateFilter?.value || "";
+  const groups = new Map();
+  for (const video of boardVideosCache) {
+    const key = dateKeyFromSavedAt(video.saved_at);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(video);
+  }
+  for (const list of groups.values()) {
+    list.sort((a, b) => Number(b.saved_at || 0) - Number(a.saved_at || 0));
+  }
+  const sortedKeys = [...groups.keys()].sort((a, b) => {
+    if (a === "unknown") return 1;
+    if (b === "unknown") return -1;
+    return b.localeCompare(a);
+  });
+  const visibleKeys = filterDate
+    ? sortedKeys.filter((key) => key === filterDate)
+    : sortedKeys;
+
+  if (!visibleKeys.length) {
+    videoList.innerHTML = "<li><em>No videos on this date</em></li>";
+    return;
+  }
+
+  for (const dateKey of visibleKeys) {
+    const groupVideos = groups.get(dateKey) || [];
+    const expanded = isDateGroupExpanded(dateKey, filterDate);
+    const section = document.createElement("li");
+    section.className = "video-list-date-group";
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "video-list-date-toggle";
+    toggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+    toggle.innerHTML = `<span class="video-list-date-chevron" aria-hidden="true">${expanded ? "▾" : "▸"}</span><span class="video-list-date-label">${formatDateGroupHeader(dateKey)}</span><span class="video-list-date-count">${groupVideos.length}</span>`;
+    toggle.addEventListener("click", () => {
+      const next = !isDateGroupExpanded(dateKey, filterDate);
+      boardDateExpandState.set(dateKey, next);
+      renderVideoList(boardVideosCache);
+    });
+
+    const items = document.createElement("ul");
+    items.className = `video-list-date-items${expanded ? "" : " collapsed"}`;
+    for (const video of groupVideos) {
+      const row = document.createElement("li");
+      row.appendChild(
+        createVideoListButton(video, (entry, btn) => loadReviewerVideo(entry, btn))
+      );
+      items.appendChild(row);
+    }
+
+    section.appendChild(toggle);
+    section.appendChild(items);
+    videoList.appendChild(section);
+  }
+}
+
+function normalizeReviewerEvents(data) {
+  const labelers = data.labelers || {};
+  const source = data.events?.length
+    ? data.events
+    : (data.predictions || []).map((item) => {
+        if (item.action != null) {
+          const frame = item.frame ?? 0;
+          return {
+            frame,
+            label: item.action,
+            time_sec: frame / videoFps,
+            participant_id: item.participant_id,
+            user_id: item.user_id,
+          };
+        }
+        return {
+          frame: item.frame ?? timeToFrame(item.time_sec),
+          label: item.label,
+          time_sec: item.time_sec,
+          participant_id: item.participant_id,
+          user_id: item.user_id,
+        };
+      });
+  return {
+    labelers: { ...labelers, ..._labelersFromEvents(source) },
+    events: source,
+  };
+}
+
+function _labelersFromEvents(events) {
+  const labelers = {};
+  for (const event of events) {
+    const pid = event.participant_id;
+    const uid = event.user_id;
+    if (pid != null && uid) labelers[String(pid)] = uid;
+  }
+  return labelers;
+}
+
+function renderReviewerEvents(events, labelers) {
+  if (!reviewerEvents) return;
+  const rows = events
+    .slice()
+    .sort((a, b) => Number(a.time_sec) - Number(b.time_sec))
+    .map((e) => {
+      const pid = e.participant_id ?? 1;
+      const color = participantColor(pid);
+      const who = labelerName(labelers, pid, e.user_id);
+      const labelName = labelDisplayName(e.label);
+      const frame = e.frame ?? timeToFrame(e.time_sec);
+      const text = `frame ${frame} · ${Number(e.time_sec).toFixed(2)}s — ${labelName} (${who})`;
+      return `<li class="event-row" style="border-left: 4px solid ${color}"><button type="button" class="event-item event-goto" data-time="${e.time_sec}">${text}</button></li>`;
+    });
+  reviewerEvents.innerHTML = rows.length
+    ? rows.join("")
+    : "<li><em>No annotations</em></li>";
+  reviewerEvents.querySelectorAll("button.event-goto").forEach((b) => {
+    b.addEventListener("click", () => {
+      reviewerVideo.pause();
+      reviewerVideo.currentTime = parseFloat(b.dataset.time);
+    });
   });
 }
 
 async function loadReviewerVideo(item, btn) {
-  videoList.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
+  videoList?.querySelectorAll("button.active").forEach((b) => {
+    b.classList.remove("active");
+  });
   btn.classList.add("active");
   const vid = item.video_id;
   reviewerVideo.src = vid
     ? new URL(serverVideoApiPath(vid), location.origin).href
     : item.video_url || "";
-  reviewerMeta.textContent = item.video_url || vid;
+  const labelerLine = formatLabelerList(item.labeler_names);
+  reviewerMeta.innerHTML = `<div><strong>${vid}</strong></div>${item.video_url ? `<div class="reviewer-meta-url">${item.video_url}</div>` : ""}<div class="reviewer-meta-labelers">Labeled by: ${labelerLine}</div></div>`;
   try {
     const res = await apiFetch(item.annotations_file);
     const data = await res.json();
-    const rows = (data.predictions || data.events || []).map((item) => {
-      if (item.action != null) {
-        const frame = item.frame ?? 0;
-        return {
-          frame,
-          label: item.action,
-          time_sec: frame / videoFps,
-          participant_id: item.participant_id,
-        };
-      }
-      return {
-        frame: item.frame ?? timeToFrame(item.time_sec),
-        label: item.label,
-        time_sec: item.time_sec,
-        participant_id: item.participant_id,
-      };
-    });
-    reviewerEvents.innerHTML = rows
-      .slice()
-      .sort((a, b) => a.time_sec - b.time_sec)
-      .map((e) => {
-        const pid = e.participant_id ?? 1;
-        const color = participantColor(pid);
-        const who = pid === myParticipantId ? "you" : `#${pid}`;
-        return `<li style="border-left: 4px solid ${color}"><button type="button" data-time="${e.time_sec}">frame ${e.frame} · ${e.time_sec.toFixed(2)}s — ${labelDisplayName(e.label)} (${who})</button></li>`;
-      })
-      .join("");
-    reviewerEvents.querySelectorAll("button").forEach((b) => {
-      b.addEventListener("click", () => {
-        reviewerVideo.pause();
-        reviewerVideo.currentTime = parseFloat(b.dataset.time);
-      });
-    });
+    const { events, labelers } = normalizeReviewerEvents(data);
+    renderReviewerEvents(events, labelers);
   } catch {
     reviewerEvents.innerHTML = "<li>Failed to load annotations</li>";
   }

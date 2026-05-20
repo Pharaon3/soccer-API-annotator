@@ -61,6 +61,7 @@ for d in (VIDEOS_DIR, ANNOTATIONS_DIR, STATIC_DIR):
 ANNOTATE_DURATION_SEC = 22
 CACHE_HIT_RESPONSE_DELAY_MIN_SEC = 20.0
 CACHE_HIT_RESPONSE_DELAY_MAX_SEC = 22.0
+PRESENCE_IDLE_SEC = 15 * 60
 SEGMENT_WINDOW_SEC = 30
 SEGMENT_PADDING_SEC = 1.0
 FIRST_PART_EXTRA_SEC = 2.0
@@ -198,6 +199,98 @@ def annotations_api_payload(data: dict[str, Any]) -> dict[str, Any]:
     return {"predictions": events_to_predictions(data.get("events", []))}
 
 
+def _labelers_from_events(events: list[dict[str, Any]]) -> dict[str, str]:
+    labelers: dict[str, str] = {}
+    for event in events:
+        participant_id = event.get("participant_id")
+        user_id = event.get("user_id")
+        if participant_id is None or not user_id:
+            continue
+        labelers[str(participant_id)] = str(user_id)
+    return labelers
+
+
+def _serialize_stored_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    stored: list[dict[str, Any]] = []
+    for event in sorted(events, key=lambda x: float(x.get("time_sec", 0))):
+        frame = event.get("frame")
+        if frame is None:
+            frame = int(round(float(event["time_sec"]) * SEGMENT_FPS))
+        item: dict[str, Any] = {
+            "time_sec": round(float(event["time_sec"]), 2),
+            "label": event["label"],
+            "participant_id": event.get("participant_id"),
+            "frame": int(frame),
+        }
+        if event.get("user_id"):
+            item["user_id"] = event["user_id"]
+        stored.append(item)
+    return stored
+
+
+def persist_video_annotations(
+    *,
+    video_id: str,
+    video_url: str,
+    video_path: Path,
+    events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Write predictions, detailed events, and labeler map to disk."""
+    predictions = events_to_predictions(events)
+    stored_events = _serialize_stored_events(events)
+    labelers = _labelers_from_events(events)
+    payload: dict[str, Any] = {
+        "predictions": predictions,
+        "events": stored_events,
+        "labelers": labelers,
+    }
+    content_hash = file_content_hash(video_path)
+    meta, events_file, _ = cache_paths(video_id)
+    events_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    meta.write_text(
+        json.dumps(
+            {
+                "video_url": video_url,
+                "video_id": video_id,
+                "content_hash": content_hash,
+                "saved_at": time.time(),
+                "local_file": video_path.name if video_path.is_file() else None,
+                "labelers": labelers,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return payload
+
+
+def annotations_detail_payload(data: dict[str, Any]) -> dict[str, Any]:
+    """Full annotation payload for the board UI (includes labeler names)."""
+    labelers = data.get("labelers") or {}
+    if "events" in data:
+        events = data["events"]
+    elif "predictions" in data:
+        events = [
+            {
+                "time_sec": round(float(p["frame"]) / SEGMENT_FPS, 2),
+                "label": p.get("action", p.get("label", "")),
+                "frame": int(p["frame"]),
+                "participant_id": p.get("participant_id"),
+                "user_id": p.get("user_id"),
+            }
+            for p in data["predictions"]
+        ]
+    else:
+        events = data.get("events", [])
+    if not labelers and events:
+        labelers = _labelers_from_events(events)
+    return {
+        "predictions": annotations_api_payload(data).get("predictions", []),
+        "events": events,
+        "labelers": labelers,
+    }
+
+
 def _remove_annotation_event(
     events: list[dict[str, Any]], time_sec: float, label: str
 ) -> bool:
@@ -214,6 +307,8 @@ class AnnotatorSession:
     websocket: WebSocket
     annotator_id: int
     joined_at: float = field(default_factory=time.time)
+    online: bool = True
+    user_id: str | None = None
 
 
 @dataclass
@@ -337,6 +432,10 @@ class ConnectionManager:
         return len(self.annotators)
 
     @property
+    def online_annotator_count(self) -> int:
+        return sum(1 for session in self.annotators.values() if session.online)
+
+    @property
     def participant_count(self) -> int:
         return len(self.participants)
 
@@ -344,10 +443,14 @@ class ConnectionManager:
     def test_annotator_count(self) -> int:
         return len(self.test_annotators)
 
-    def _new_participant(self, ws: WebSocket) -> AnnotatorSession:
+    def _new_participant(
+        self, ws: WebSocket, *, user_id: str | None = None
+    ) -> AnnotatorSession:
         self._next_participant_id += 1
         session = AnnotatorSession(
-            websocket=ws, annotator_id=self._next_participant_id
+            websocket=ws,
+            annotator_id=self._next_participant_id,
+            user_id=user_id,
         )
         self.participants[session.annotator_id] = session
         return session
@@ -359,20 +462,26 @@ class ConnectionManager:
         self._next_test_round_at = at
         return at
 
-    async def register_annotator(self, ws: WebSocket) -> AnnotatorSession:
-        session = self._new_participant(ws)
+    async def register_annotator(
+        self, ws: WebSocket, *, user_id: str | None = None
+    ) -> AnnotatorSession:
+        session = self._new_participant(ws, user_id=user_id)
         self.annotators[session.annotator_id] = session
         await self._broadcast_annotator_count()
         return session
 
-    async def register_test_annotator(self, ws: WebSocket) -> AnnotatorSession:
-        session = self._new_participant(ws)
+    async def register_test_annotator(
+        self, ws: WebSocket, *, user_id: str | None = None
+    ) -> AnnotatorSession:
+        session = self._new_participant(ws, user_id=user_id)
         self.test_annotators[session.annotator_id] = session
         await self._broadcast_annotator_count()
         return session
 
-    async def register_reviewer(self, ws: WebSocket) -> AnnotatorSession:
-        session = self._new_participant(ws)
+    async def register_reviewer(
+        self, ws: WebSocket, *, user_id: str | None = None
+    ) -> AnnotatorSession:
+        session = self._new_participant(ws, user_id=user_id)
         self.reviewers.add(ws)
         await self._broadcast_annotator_count()
         return session
@@ -425,8 +534,24 @@ class ConnectionManager:
         if removed:
             await self._broadcast_annotator_count()
 
+    async def set_session_online(self, session: AnnotatorSession, online: bool) -> None:
+        session.online = online
+        try:
+            await session.websocket.send_text(
+                json.dumps({"type": "presence_status", "online": online})
+            )
+        except Exception:
+            pass
+        await self._broadcast_annotator_count()
+
     async def _broadcast_annotator_count(self) -> None:
-        msg = json.dumps({"type": "annotator_count", "count": self.annotator_count})
+        msg = json.dumps(
+            {
+                "type": "annotator_count",
+                "count": self.annotator_count,
+                "online_count": self.online_annotator_count,
+            }
+        )
         dead: list[int] = []
         for aid, session in self.participants.items():
             try:
@@ -452,8 +577,20 @@ class ConnectionManager:
     def snapshot_participants(self) -> list[AnnotatorSession]:
         return sorted(self.participants.values(), key=lambda s: s.annotator_id)
 
+    def snapshot_online_annotators(self) -> list[AnnotatorSession]:
+        return sorted(
+            (s for s in self.annotators.values() if s.online),
+            key=lambda s: s.annotator_id,
+        )
+
     def snapshot_test_annotators(self) -> list[AnnotatorSession]:
         return sorted(self.test_annotators.values(), key=lambda s: s.annotator_id)
+
+    def snapshot_online_test_annotators(self) -> list[AnnotatorSession]:
+        return sorted(
+            (s for s in self.test_annotators.values() if s.online),
+            key=lambda s: s.annotator_id,
+        )
 
     @staticmethod
     def ranks_for_sessions(sessions: list[AnnotatorSession]) -> dict[int, int]:
@@ -565,7 +702,7 @@ class ConnectionManager:
         )
 
     async def send_active_annotate_job(self, session: AnnotatorSession) -> None:
-        if not active_jobs:
+        if not session.online or not active_jobs:
             return
         job_id, job = max(active_jobs.items(), key=lambda item: item[1].started_at)
         rank = job.rank_by_participant_id.get(session.annotator_id)
@@ -924,9 +1061,12 @@ async def run_annotate_job(
     job_id = f"{video_id}-{int(started_at * 1000)}"
     _, _, video_path = cache_paths(video_id)
 
-    sessions = manager.snapshot_participants()
+    sessions = manager.snapshot_online_annotators()
     rank_by_id = manager.ranks_for_sessions(sessions)
     x = len(sessions)
+    if x == 0:
+        logger.warning("Annotate job skipped: no online annotators")
+        return {"predictions": []}
 
     job = ActiveJob(
         job_id=job_id,
@@ -1021,26 +1161,15 @@ async def _run_annotate_job_body(
     events = sorted(job_events.pop(job_id, []), key=lambda e: e["time_sec"])
     active_jobs.pop(job_id, None)
 
-    predictions = events_to_predictions(events)
-    payload = {"predictions": predictions}
-    content_hash = await asyncio.to_thread(file_content_hash, video_path)
-    meta, events_file, _ = cache_paths(video_id)
-    events_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    meta.write_text(
-        json.dumps(
-            {
-                "video_url": video_url,
-                "video_id": video_id,
-                "content_hash": content_hash,
-                "saved_at": time.time(),
-                "local_file": video_path.name if video_path.is_file() else None,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
+    payload = await asyncio.to_thread(
+        persist_video_annotations,
+        video_id=video_id,
+        video_url=video_url,
+        video_path=video_path,
+        events=events,
     )
     await manager.notify_reviewers_video_saved(video_id)
-    return payload
+    return {"predictions": payload["predictions"]}
 
 
 async def wait_cache_hit_response_delay(request_started_at: float) -> float:
@@ -1152,7 +1281,7 @@ async def run_test_round() -> None:
     active_test_jobs.add(job_id)
     test_job_events[job_id] = []
 
-    sessions = manager.snapshot_test_annotators()
+    sessions = manager.snapshot_online_test_annotators()
     if not sessions:
         active_test_jobs.discard(job_id)
         test_job_events.pop(job_id, None)
@@ -1289,6 +1418,11 @@ async def annotate(
             status_code=503,
             detail="No annotators connected. Open /annotator in a browser while logged in and keep the tab open.",
         )
+    if manager.online_annotator_count == 0:
+        raise HTTPException(
+            status_code=503,
+            detail="No online annotators available. Click «I am Online» in the annotator UI.",
+        )
 
     try:
         video_id_from_url(video_url)
@@ -1316,28 +1450,35 @@ async def annotate(
 
 def _list_videos_data() -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
-    for meta_file in sorted(ANNOTATIONS_DIR.glob("*.meta.json")):
+    for meta_file in ANNOTATIONS_DIR.glob("*.meta.json"):
         meta = json.loads(meta_file.read_text(encoding="utf-8"))
         vid = meta.get("video_id")
         if not vid:
             continue
         events_file = ANNOTATIONS_DIR / f"{vid}.json"
         event_count = 0
+        labelers: dict[str, str] = dict(meta.get("labelers") or {})
         if events_file.is_file():
             data = json.loads(events_file.read_text(encoding="utf-8"))
             event_count = len(
-                data.get("predictions", data.get("events", []))
+                data.get("events", data.get("predictions", []))
             )
+            if not labelers:
+                labelers = dict(data.get("labelers") or {})
+        labeler_names = sorted(set(labelers.values()))
         items.append(
             {
                 "video_id": vid,
                 "video_url": meta.get("video_url"),
                 "saved_at": meta.get("saved_at"),
                 "event_count": event_count,
+                "labelers": labelers,
+                "labeler_names": labeler_names,
                 "video_file": public_video_path(vid),
                 "annotations_file": f"/api/videos/{vid}/annotations",
             }
         )
+    items.sort(key=lambda item: float(item.get("saved_at") or 0), reverse=True)
     return items
 
 
@@ -1346,6 +1487,7 @@ async def health() -> dict[str, Any]:
     payload: dict[str, Any] = {
         "status": "ok",
         "annotators_connected": manager.annotator_count,
+        "online_annotators_connected": manager.online_annotator_count,
         "participants_connected": manager.participant_count,
         "test_annotators_connected": manager.test_annotator_count,
     }
@@ -1415,7 +1557,8 @@ async def get_annotations(video_id: str, request: Request) -> dict[str, Any]:
     path = ANNOTATIONS_DIR / f"{video_id}.json"
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Annotations not found")
-    return annotations_api_payload(json.loads(path.read_text(encoding="utf-8")))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return annotations_detail_payload(data)
 
 
 @app.get("/api/labels")
@@ -1440,6 +1583,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     manager.connections.add(websocket)
     role: str | None = None
     annotator_session: AnnotatorSession | None = None
+    session_user_id = get_session_user_id(
+        websocket.cookies.get(AUTH_COOKIE_NAME)
+    )
 
     try:
         while True:
@@ -1456,7 +1602,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     annotator_session = None
                 role = data.get("role")
                 if role == "annotator":
-                    annotator_session = await manager.register_annotator(websocket)
+                    annotator_session = await manager.register_annotator(
+                        websocket, user_id=session_user_id
+                    )
                     rank = manager.rank_of_participant(annotator_session.annotator_id)
                     x = manager.annotator_count
                     await websocket.send_text(
@@ -1467,6 +1615,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                                 "annotator_id": annotator_session.annotator_id,
                                 "annotator_index": rank,
                                 "annotator_total": x,
+                                "online": annotator_session.online,
                                 "segment_window_sec": SEGMENT_WINDOW_SEC,
                                 **playback_timing_for_rank(rank, x),
                             }
@@ -1475,7 +1624,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     if active_jobs:
                         await manager.send_active_annotate_job(annotator_session)
                 elif role == "reviewer":
-                    reviewer_session = await manager.register_reviewer(websocket)
+                    reviewer_session = await manager.register_reviewer(
+                        websocket, user_id=session_user_id
+                    )
                     rank = manager.rank_of_participant(reviewer_session.annotator_id)
                     x = manager.annotator_count
                     await websocket.send_text(
@@ -1494,7 +1645,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         )
                     )
                 elif role == "test":
-                    annotator_session = await manager.register_test_annotator(websocket)
+                    annotator_session = await manager.register_test_annotator(
+                        websocket, user_id=session_user_id
+                    )
                     rank = manager.rank_of_participant(annotator_session.annotator_id)
                     x = manager.annotator_count
                     await websocket.send_text(
@@ -1505,6 +1658,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                                 "annotator_id": annotator_session.annotator_id,
                                 "annotator_index": rank,
                                 "annotator_total": x,
+                                "online": annotator_session.online,
                                 "segment_window_sec": SEGMENT_WINDOW_SEC,
                                 **playback_timing_for_rank(rank, x),
                             }
@@ -1513,7 +1667,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     await manager.send_test_schedule(websocket)
                 continue
 
+            if msg_type == "set_online" and annotator_session is not None:
+                await manager.set_session_online(
+                    annotator_session, bool(data.get("online", False))
+                )
+                continue
+
             if msg_type == "annotation" and role == "test":
+                if annotator_session and not annotator_session.online:
+                    continue
                 job_id = data.get("job_id")
                 label = data.get("label")
                 time_sec = data.get("time_sec")
@@ -1524,6 +1686,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     "time_sec": round(float(time_sec), 2),
                     "label": label,
                     "participant_id": pid,
+                    "user_id": annotator_session.user_id if annotator_session else None,
                     "uid": f"p{pid}-{round(float(time_sec), 2)}-{label}",
                 }
                 test_job_events.setdefault(job_id, []).append(event)
@@ -1533,6 +1696,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 continue
 
             if msg_type == "annotation" and role in ("annotator", "reviewer"):
+                if annotator_session and not annotator_session.online:
+                    continue
                 job_id = data.get("job_id")
                 label = data.get("label")
                 time_sec = data.get("time_sec")
@@ -1543,6 +1708,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     "time_sec": round(float(time_sec), 2),
                     "label": label,
                     "participant_id": pid,
+                    "user_id": annotator_session.user_id if annotator_session else None,
                     "uid": f"p{pid}-{round(float(time_sec), 2)}-{label}",
                 }
                 job_events[job_id].append(event)

@@ -29,7 +29,14 @@
     <div class="reviewer-layout">
       <aside class="video-list-panel">
         <h2>Saved videos</h2>
-        <ul id="video-list"></ul>
+        <div class="video-list-search">
+          <label for="video-date-filter" class="video-list-search-label">Search by date</label>
+          <div class="video-list-search-row">
+            <input type="date" id="video-date-filter" class="video-list-search-input" />
+            <button type="button" id="btn-clear-date-filter" class="small-btn">Clear</button>
+          </div>
+        </div>
+        <ul id="video-list" class="video-list-grouped"></ul>
       </aside>
       <section class="reviewer-main">
         <video id="reviewer-video" controls playsinline></video>

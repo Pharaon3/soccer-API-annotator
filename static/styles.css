@@ -1421,6 +1421,149 @@ body.annotations-locked .label-btn {
   background: #2a3d58;
 }
 
+.video-list-search {
+  margin-bottom: 0.85rem;
+}
+
+.video-list-search-label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-bottom: 0.35rem;
+}
+
+.video-list-search-row {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.video-list-search-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.4rem 0.5rem;
+  border-radius: 8px;
+  border: 1px solid #2a3a52;
+  background: var(--surface2);
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.video-list-grouped {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.video-list-date-group {
+  margin-bottom: 0.5rem;
+  list-style: none;
+}
+
+.video-list-date-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.55rem 0.6rem;
+  border: 1px solid #2a3a52;
+  border-radius: 8px;
+  background: #1a2433;
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.video-list-date-toggle:hover {
+  border-color: var(--accent);
+}
+
+.video-list-date-chevron {
+  flex-shrink: 0;
+  width: 0.85rem;
+  color: var(--muted);
+}
+
+.video-list-date-label {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.video-list-date-count {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  color: var(--muted);
+  background: var(--surface2);
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+}
+
+.video-list-date-items {
+  list-style: none;
+  margin: 0.35rem 0 0;
+  padding: 0 0 0 0.35rem;
+}
+
+.video-list-date-items.collapsed {
+  display: none;
+}
+
+.video-list-date-items > li {
+  margin-bottom: 0.35rem;
+}
+
+.video-list-id {
+  display: block;
+  font-size: 0.84rem;
+  margin-bottom: 0.15rem;
+}
+
+.video-list-meta,
+.video-list-labelers {
+  display: block;
+  font-size: 0.74rem;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+.video-list-labelers {
+  margin-top: 0.15rem;
+  color: #cbd5e1;
+}
+
+.reviewer-meta-url {
+  margin-top: 0.35rem;
+  word-break: break-all;
+}
+
+.reviewer-meta-labelers {
+  margin-top: 0.35rem;
+  color: #cbd5e1;
+}
+
+#reviewer-events .event-row {
+  margin-bottom: 0.35rem;
+}
+
+#reviewer-events .event-item {
+  width: 100%;
+  text-align: left;
+  padding: 0.45rem 0.55rem;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+#reviewer-events .event-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 6px;
+}
+
 .reviewer-main {
   padding: 1rem 1.5rem;
   overflow: hidden;
@@ -1527,4 +1670,102 @@ body.annotations-locked .label-btn {
     border-top: 1px solid #2a3a52;
     max-height: 200px;
   }
+}
+
+.presence-btn {
+  width: 100%;
+  padding: 0.45rem 0.65rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  border-radius: 8px;
+  border: 1px solid rgba(62, 207, 142, 0.45);
+  background: rgba(62, 207, 142, 0.12);
+  color: var(--success);
+  cursor: default;
+}
+
+.presence-btn.offline {
+  border-color: rgba(251, 191, 36, 0.55);
+  background: rgba(251, 191, 36, 0.18);
+  color: #fbbf24;
+  cursor: pointer;
+  animation: presence-pulse 1.4s ease-in-out infinite;
+}
+
+.presence-btn.offline:hover {
+  background: rgba(251, 191, 36, 0.28);
+}
+
+@keyframes presence-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(251, 191, 36, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(251, 191, 36, 0);
+  }
+}
+
+.presence-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: rgba(8, 12, 20, 0.82);
+  backdrop-filter: blur(4px);
+}
+
+.presence-overlay.hidden {
+  display: none;
+}
+
+.presence-overlay-card {
+  max-width: 28rem;
+  width: 100%;
+  padding: 2rem 1.75rem;
+  text-align: center;
+  border-radius: 16px;
+  background: #121a28;
+  border: 1px solid #2a3a52;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45);
+}
+
+.presence-overlay-title {
+  margin: 0 0 0.65rem;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: #f1f5f9;
+}
+
+.presence-overlay-hint {
+  margin: 0 0 1.5rem;
+  font-size: 0.95rem;
+  line-height: 1.45;
+  color: #94a3b8;
+}
+
+.presence-overlay-btn {
+  display: block;
+  width: 100%;
+  padding: 1rem 1.25rem;
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #0b1220;
+  background: linear-gradient(180deg, #3ecf8e 0%, #22c55e 100%);
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  box-shadow: 0 8px 24px rgba(34, 197, 94, 0.35);
+}
+
+.presence-overlay-btn:hover {
+  filter: brightness(1.06);
+}
+
+body.presence-prompt-open {
+  overflow: hidden;
 }

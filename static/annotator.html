@@ -52,6 +52,7 @@
             <a href="/" class="small-btn nav-link">Home</a>
             <a href="/board" class="small-btn nav-link">Board</a>
             <a href="/practice" class="small-btn nav-link">Practice</a>
+            <button type="button" id="btn-presence" class="presence-btn online">Online</button>
             <button type="button" id="btn-logout" class="small-btn" data-action="logout">Log out</button>
           </div>
           <p id="connection-status" class="connection-status hidden" role="alert"></p>
@@ -62,6 +63,14 @@
         <span id="session-info" class="sr-only"></span>
         <span id="job-info" class="sr-only"></span>
       </aside>
+    </div>
+  </div>
+
+  <div id="presence-overlay" class="presence-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="presence-overlay-title">
+    <div class="presence-overlay-card">
+      <p id="presence-overlay-title" class="presence-overlay-title">You've been idle for 15 minutes</p>
+      <p class="presence-overlay-hint">You are offline and will not receive new tasks until you confirm.</p>
+      <button type="button" id="btn-presence-confirm" class="presence-overlay-btn">I am Online</button>
     </div>
   </div>
 
