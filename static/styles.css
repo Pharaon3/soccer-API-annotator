@@ -1417,12 +1417,12 @@ body.page-review .board-video-controller {
   --stack-y: 0px;
   position: absolute;
   top: 50%;
-  width: 3px;
+  width: 2px;
   height: 16px;
-  margin-left: -1.5px;
+  margin-left: -1px;
   margin-top: -8px;
-  border-radius: 99px;
-  border: 1px solid rgba(255, 255, 255, 0.92);
+  border-radius: 1px;
+  border: none;
   pointer-events: auto;
   cursor: pointer;
   transform: translateY(calc(-1 * var(--stack-y)));
@@ -1432,9 +1432,9 @@ body.page-review .board-video-controller {
 
 .timeline-marker:hover,
 .timeline-marker:focus-visible {
-  transform: translateY(calc(-1 * var(--stack-y))) scaleX(1.35);
+  transform: translateY(calc(-1 * var(--stack-y))) scaleX(1.25);
   z-index: 14;
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.35);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35);
 }
 
 .timeline-marker.mine {
