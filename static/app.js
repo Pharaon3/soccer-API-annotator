@@ -541,6 +541,21 @@ function seekToEvent(event) {
   updatePlayPauseButton();
 }
 
+function seekAnnotatorByClientX(clientX) {
+  if (!videoTimeline || !video.src) return;
+  const rect = videoTimeline.getBoundingClientRect();
+  if (rect.width <= 0) return;
+  const pct = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+  const windowSec = jobWindowSec || 30;
+  const globalT = pct * windowSec;
+  const clamped = Math.min(jobPlayGlobalEnd, Math.max(jobPlayGlobalStart, globalT));
+  clearSelectedEvent();
+  video.pause();
+  video.currentTime = localTimeFromGlobal(clamped);
+  updateVideoHud();
+  updatePlayPauseButton();
+}
+
 function setStatusMessage(text, target = roleStatus) {
   if (target) target.textContent = text;
   else if (jobInfo) jobInfo.textContent = text;
@@ -1636,7 +1651,7 @@ function renderSessionEvents() {
         mine && editable
           ? `<button type="button" class="event-delete" data-event-id="${e.id}" title="Delete annotation" aria-label="Delete annotation">${EVENT_DELETE_ICON}</button>`
           : "";
-      return `<li class="event-row${mine ? " event-row-mine" : ""}${selected ? " event-row-selected" : ""}" style="${style}">${gotoBtn}${deleteBtn}</li>`;
+      return `<li class="event-row${mine ? " event-row-mine" : ""}${selected ? " event-row-selected" : ""}" style="${style}">${deleteBtn}${gotoBtn}</li>`;
     })
     .join("");
 }
@@ -2396,19 +2411,7 @@ videoTimeline?.addEventListener("pointerdown", (e) => {
   if (!video.src) return;
   const marker = e.target.closest(".timeline-marker");
   if (marker) return;
-
-  const rect = videoTimeline.getBoundingClientRect();
-  if (rect.width <= 0) return;
-  const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-  const windowSec = jobWindowSec || 30;
-  const globalT = pct * windowSec;
-  const clamped = Math.min(jobPlayGlobalEnd, Math.max(jobPlayGlobalStart, globalT));
-
-  clearSelectedEvent();
-  video.pause();
-  video.currentTime = localTimeFromGlobal(clamped);
-  updateVideoHud();
-  updatePlayPauseButton();
+  seekAnnotatorByClientX(e.clientX);
 
   videoTimeline.setPointerCapture?.(e.pointerId);
 });
@@ -2416,16 +2419,7 @@ videoTimeline?.addEventListener("pointerdown", (e) => {
 videoTimeline?.addEventListener("pointermove", (e) => {
   if (!video.src) return;
   if (!videoTimeline.hasPointerCapture?.(e.pointerId)) return;
-  const rect = videoTimeline.getBoundingClientRect();
-  if (rect.width <= 0) return;
-  const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-  const windowSec = jobWindowSec || 30;
-  const globalT = pct * windowSec;
-  const clamped = Math.min(jobPlayGlobalEnd, Math.max(jobPlayGlobalStart, globalT));
-  video.pause();
-  video.currentTime = localTimeFromGlobal(clamped);
-  updateVideoHud();
-  updatePlayPauseButton();
+  seekAnnotatorByClientX(e.clientX);
 });
 
 videoTimeline?.addEventListener("pointerup", (e) => {
@@ -2436,6 +2430,18 @@ videoTimeline?.addEventListener("pointerup", (e) => {
 videoTimeline?.addEventListener("pointercancel", (e) => {
   if (!videoTimeline.hasPointerCapture?.(e.pointerId)) return;
   videoTimeline.releasePointerCapture?.(e.pointerId);
+});
+
+videoFrameDisplay?.addEventListener("pointerdown", (e) => {
+  if (!video.src) return;
+  seekAnnotatorByClientX(e.clientX);
+});
+
+boardVideoFrameDisplay?.addEventListener("pointerdown", (e) => {
+  if (!reviewerVideo?.src) return;
+  reviewerVideo.pause();
+  seekBoardToClientX(e.clientX);
+  updateBoardPlayPauseButton();
 });
 
 bindTimelineMarkerTooltips(videoTimeline);

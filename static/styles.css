@@ -1333,7 +1333,8 @@ body.page-review .board-video-controller {
   flex-direction: column;
   align-items: center;
   line-height: 1.05;
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: pointer;
   text-align: center;
   white-space: nowrap;
 }
@@ -1355,7 +1356,7 @@ body.page-review .board-video-controller {
   position: absolute;
   left: 0;
   right: 0;
-  top: 70%;
+  top: 72%;
   transform: translateY(-50%);
   height: 0.7rem;
   display: flex;
@@ -1462,7 +1463,7 @@ body.page-review .board-video-controller {
   position: absolute;
   left: 0;
   right: 0;
-  top: 50%;
+  top: 72%;
   height: 0;
   pointer-events: none;
 }
@@ -1471,11 +1472,11 @@ body.page-review .board-video-controller {
   --stack-y: 0px;
   position: absolute;
   padding: 2px;
-  top: 50%;
+  top: 0;
   width: 2px;
   height: 16px;
   margin-left: -1px;
-  margin-top: -8px;
+  margin-top: -16px;
   border-radius: 1px;
   border: none;
   pointer-events: auto;
@@ -1599,7 +1600,7 @@ body.page-review .board-video-controller {
   padding: 0 0 0 0.35rem;
   background: transparent;
   border: none;
-  border-left: 1px solid #2a3a52;
+  border-right: 1px solid #2a3a52;
   color: #ef4444;
   cursor: pointer;
   border-radius: 0;
