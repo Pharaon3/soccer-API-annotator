@@ -1637,8 +1637,9 @@ function renderSessionEvents() {
       const labelName = labelDisplayName(e.label);
       const mine = e.participant_id === myParticipantId;
       const who = mine ? "you" : `#${e.participant_id}`;
-      const color = LABEL_COLORS[e.label] || "#94a3b8";
-      const style = `border-left: 4px solid ${color}`;
+      const annotatorColor = participantColor(e.participant_id);
+      const eventColor = LABEL_COLORS[e.label] || "#94a3b8";
+      const style = `border-left: 4px solid ${annotatorColor}; background: color-mix(in srgb, ${eventColor} 20%, transparent)`;
       const selected = mine && e.id === selectedEventId;
       const text = `frame ${e.frame} · ${e.time_sec.toFixed(2)}s — ${labelName} (${who})`;
       const gotoTitle = mine && editable
@@ -2801,12 +2802,13 @@ function renderReviewerEvents(events, labelers) {
     .sort((a, b) => Number(a.time_sec) - Number(b.time_sec))
     .map((e) => {
       const pid = e.participant_id ?? 1;
-      const color = LABEL_COLORS[e.label] || "#94a3b8";
+      const annotatorColor = participantColor(pid);
+      const eventColor = LABEL_COLORS[e.label] || "#94a3b8";
       const who = labelerName(labelers, pid, e.user_id);
       const labelName = labelDisplayName(e.label);
       const frame = e.frame ?? timeToFrame(e.time_sec);
       const text = `frame ${frame} · ${Number(e.time_sec).toFixed(2)}s — ${labelName} (${who})`;
-      return `<li class="event-row" style="border-left: 4px solid ${color}"><button type="button" class="event-item event-goto" data-time="${e.time_sec}">${text}</button></li>`;
+      return `<li class="event-row" style="border-left: 4px solid ${annotatorColor}; background: color-mix(in srgb, ${eventColor} 20%, transparent)"><button type="button" class="event-item event-goto" data-time="${e.time_sec}">${text}</button></li>`;
     });
   reviewerEvents.innerHTML = rows.length
     ? rows.join("")
