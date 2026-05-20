@@ -2396,7 +2396,6 @@ videoTimeline?.addEventListener("pointerdown", (e) => {
   if (!video.src) return;
   const marker = e.target.closest(".timeline-marker");
   if (marker) return;
-  if (e.target.closest(".video-seek")) return;
 
   const rect = videoTimeline.getBoundingClientRect();
   if (rect.width <= 0) return;
@@ -2619,7 +2618,6 @@ function bindBoardPlayerHandlers() {
       updateBoardVideoHud();
       return;
     }
-    if (e.target.closest(".video-seek")) return;
     seekBoardToClientX(e.clientX);
   });
 
