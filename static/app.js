@@ -478,6 +478,13 @@ function sendPresenceOnline(online) {
   send({ type: "set_online", online: !!online });
 }
 
+function ensureWorkspaceOnline() {
+  presenceOnline = true;
+  updatePresenceUi();
+  hidePresenceOverlay();
+  sendPresenceOnline(true);
+}
+
 function setPresenceOnline(online, { notifyServer = true } = {}) {
   presenceOnline = !!online;
   updatePresenceUi();
@@ -908,12 +915,27 @@ function startApiNextCountdownAt(nextCallAtSec) {
   apiNextRafId = requestAnimationFrame(tick);
 }
 
+function redirectToAnnotatorForApiCall(data) {
+  sessionStorage.setItem(
+    PENDING_ANNOTATE_KEY,
+    JSON.stringify({
+      api_pending: true,
+      video_id: data?.video_id ?? null,
+    })
+  );
+  window.location.href = "/annotator";
+}
+
 function handleApiCallStarted(data) {
   notifyApiCallRequested(data.video_id);
   if (data.next_call_at != null) {
     startApiNextCountdownAt(data.next_call_at);
   } else {
     startApiNextCountdown(data.interval_sec || API_CALL_INTERVAL_SEC);
+  }
+  if (IS_BOARD_PAGE || IS_PRACTICE_PAGE) {
+    redirectToAnnotatorForApiCall(data);
+    return;
   }
   if (data.video_id && role === "annotator") {
     showConnectionStatus(`API job started: ${data.video_id}`, true);
@@ -956,7 +978,7 @@ function jobSecondsLeft(data) {
 }
 
 function goToAnnotatorForJob(data) {
-  if (IS_PRACTICE_PAGE) {
+  if (IS_PRACTICE_PAGE || IS_BOARD_PAGE) {
     redirectToAnnotatorForApiJob(data);
     return;
   }
@@ -1211,20 +1233,24 @@ function updateTimelineSeekRange() {
   updateTimelineZones();
 }
 
-function ensureTimelineTooltip() {
-  if (timelineTooltip) return timelineTooltip;
-  if (!videoTimeline) return null;
-  timelineTooltip = document.createElement("div");
-  timelineTooltip.id = "timeline-marker-tooltip";
-  timelineTooltip.className = "timeline-marker-tooltip hidden";
-  timelineTooltip.setAttribute("role", "tooltip");
-  videoTimeline.appendChild(timelineTooltip);
-  return timelineTooltip;
+const timelineTooltipByRoot = new WeakMap();
+
+function ensureTimelineTooltipFor(timelineEl) {
+  if (!timelineEl) return null;
+  let tip = timelineTooltipByRoot.get(timelineEl);
+  if (tip) return tip;
+  tip = document.createElement("div");
+  tip.className = "timeline-marker-tooltip hidden";
+  tip.setAttribute("role", "tooltip");
+  timelineEl.appendChild(tip);
+  timelineTooltipByRoot.set(timelineEl, tip);
+  if (timelineEl === videoTimeline) timelineTooltip = tip;
+  if (timelineEl === boardVideoTimeline) boardTimelineTooltip = tip;
+  return tip;
 }
 
-function showTimelineMarkerTooltip(marker) {
-  const tip = ensureTimelineTooltip();
-  if (!tip || !marker) return;
+function showTimelineMarkerTooltipFor(marker, timelineEl, tip) {
+  if (!tip || !marker || !timelineEl) return;
 
   const labelName =
     marker.dataset.labelName || labelDisplayName(marker.dataset.label) || "Event";
@@ -1243,21 +1269,42 @@ function showTimelineMarkerTooltip(marker) {
   `;
   tip.classList.remove("hidden");
 
-  const timelineRect = videoTimeline.getBoundingClientRect();
+  const timelineRect = timelineEl.getBoundingClientRect();
   const markerRect = marker.getBoundingClientRect();
   const centerX = markerRect.left + markerRect.width / 2 - timelineRect.left;
   tip.style.left = `${centerX}px`;
 }
 
-function hideTimelineMarkerTooltip() {
-  timelineTooltip?.classList.add("hidden");
+function hideTimelineMarkerTooltipFor(timelineEl) {
+  timelineTooltipByRoot.get(timelineEl)?.classList.add("hidden");
+}
+
+function bindTimelineMarkerTooltips(timelineEl) {
+  if (!timelineEl || timelineEl.dataset.markerTooltipsBound === "1") return;
+  timelineEl.dataset.markerTooltipsBound = "1";
+  timelineEl.addEventListener("pointerover", (e) => {
+    const marker = e.target.closest(".timeline-marker");
+    if (!marker || !timelineEl.contains(marker)) return;
+    showTimelineMarkerTooltipFor(
+      marker,
+      timelineEl,
+      ensureTimelineTooltipFor(timelineEl)
+    );
+  });
+  timelineEl.addEventListener("pointerout", (e) => {
+    const marker = e.target.closest(".timeline-marker");
+    if (!marker) return;
+    const to = e.relatedTarget;
+    if (to && marker.contains(to)) return;
+    hideTimelineMarkerTooltipFor(timelineEl);
+  });
 }
 
 function renderTimelineMarkers() {
   if (!timelineMarkers) return;
   if (!video.src) {
     timelineMarkers.innerHTML = "";
-    hideTimelineMarkerTooltip();
+    hideTimelineMarkerTooltipFor(videoTimeline);
     return;
   }
   const windowSec = jobWindowSec || 30;
@@ -1386,6 +1433,10 @@ function formatLabelKey(key) {
 function buildLabelButtons() {
   if (!labelButtons) return;
   labelButtons.innerHTML = "";
+  if (!LABELS.length) {
+    labelButtons.innerHTML = "<p class=\"label-grid-empty\">Labels not loaded</p>";
+    return;
+  }
   const labelById = Object.fromEntries(LABELS.map((l) => [l.id, l]));
   labelKeyboardRows.forEach((row, rowIndex) => {
     row.forEach((labelId) => {
@@ -1401,6 +1452,10 @@ function buildLabelButtons() {
       labelButtons.appendChild(btn);
     });
   });
+}
+
+function rebuildLabelUi() {
+  buildLabelButtons();
 }
 
 function showOverlay(labelId, frame) {
@@ -1873,11 +1928,17 @@ function handleMessage(data) {
         showScreen(annotatorScreen);
         requestNotificationPermission();
         showApiNextIdle();
-        if (pendingAnnotateJob) {
+        if (pendingAnnotateJob && !pendingAnnotateJob.api_pending) {
           const job = applyRoleAckToJob(pendingAnnotateJob, data);
           pendingAnnotateJob = null;
           beginJobCountdown(job);
           startAnnotatorJob(job);
+        } else if (pendingAnnotateJob?.api_pending) {
+          const pendingVid = pendingAnnotateJob.video_id;
+          pendingAnnotateJob = null;
+          if (pendingVid) {
+            jobInfo.textContent = `API job started · ${pendingVid} · waiting for video…`;
+          }
         }
       }
       if (data.role === "reviewer") {
@@ -1887,12 +1948,15 @@ function handleMessage(data) {
         stopVideoHudLoop();
         video.pause();
         video.removeAttribute("src");
+        ensureWorkspaceOnline();
       }
       if (data.role === "annotator" || data.role === "test") {
         initPresenceTracking(data.online !== false);
-      } else {
+        ensureWorkspaceOnline();
+      } else if (data.role !== "reviewer") {
         stopPresenceTracking();
       }
+      rebuildLabelUi();
       hideRoleModal();
       break;
     case "presence_status":
@@ -1905,7 +1969,7 @@ function handleMessage(data) {
       }
       break;
     case "api_call_started":
-      if (IS_ANNOTATOR_PAGE) handleApiCallStarted(data);
+      handleApiCallStarted(data);
       break;
     case "annotate_start":
       handleAnnotateStart(data);
@@ -2071,6 +2135,7 @@ async function bootApp() {
 
   try {
     await loadLabelConfig();
+    rebuildLabelUi();
   } catch {
     setStatusMessage("Could not load label configuration.");
     showConnectionStatus("Could not load label configuration.");
@@ -2103,7 +2168,14 @@ async function bootApp() {
     const raw = sessionStorage.getItem(PENDING_ANNOTATE_KEY);
     if (raw) {
       try {
-        pendingAnnotateJob = JSON.parse(raw);
+        const pending = JSON.parse(raw);
+        if (pending?.api_pending) {
+          if (pending.video_id && jobInfo) {
+            jobInfo.textContent = `API job started · ${pending.video_id} · waiting for video…`;
+          }
+        } else {
+          pendingAnnotateJob = pending;
+        }
       } catch {
         pendingAnnotateJob = null;
       }
@@ -2163,17 +2235,7 @@ timelineMarkers?.addEventListener("click", (e) => {
   updateVideoHud();
 });
 
-videoTimeline?.addEventListener("mouseover", (e) => {
-  const marker = e.target.closest(".timeline-marker");
-  if (marker) showTimelineMarkerTooltip(marker);
-});
-
-videoTimeline?.addEventListener("mouseout", (e) => {
-  const marker = e.target.closest(".timeline-marker");
-  if (!marker) return;
-  const to = e.relatedTarget;
-  if (!to || !marker.contains(to)) hideTimelineMarkerTooltip();
-});
+bindTimelineMarkerTooltips(videoTimeline);
 
 eventsList?.addEventListener("click", (e) => {
   const deleteBtn = e.target.closest(".event-delete");
@@ -2257,50 +2319,25 @@ function updateBoardTimelineSeekRange() {
   updateBoardTimelineTrack();
 }
 
-function ensureBoardTimelineTooltip() {
-  if (boardTimelineTooltip) return boardTimelineTooltip;
-  if (!boardVideoTimeline) return null;
-  boardTimelineTooltip = document.createElement("div");
-  boardTimelineTooltip.id = "board-timeline-marker-tooltip";
-  boardTimelineTooltip.className = "timeline-marker-tooltip hidden";
-  boardTimelineTooltip.setAttribute("role", "tooltip");
-  boardVideoTimeline.appendChild(boardTimelineTooltip);
-  return boardTimelineTooltip;
-}
-
-function showBoardTimelineMarkerTooltip(marker) {
-  const tip = ensureBoardTimelineTooltip();
-  if (!tip || !marker) return;
-  const labelName =
-    marker.dataset.labelName || labelDisplayName(marker.dataset.label) || "Event";
-  const frame = marker.dataset.frame ?? "—";
-  const timeSec = Number(marker.dataset.time);
-  const timeText = Number.isFinite(timeSec) ? `${timeSec.toFixed(2)}s` : "—";
-  const who = marker.dataset.who || "";
-  const color = marker.style.background || LABEL_COLORS[marker.dataset.label] || "#94a3b8";
-  tip.style.setProperty("--tooltip-accent", color);
-  tip.innerHTML = `
-    <span class="timeline-tooltip-swatch" style="background:${color}"></span>
-    <span class="timeline-tooltip-label">${labelName}</span>
-    <span class="timeline-tooltip-meta">frame ${frame} · ${timeText}</span>
-    <span class="timeline-tooltip-who">${who}</span>
-  `;
-  tip.classList.remove("hidden");
-  const timelineRect = boardVideoTimeline.getBoundingClientRect();
-  const markerRect = marker.getBoundingClientRect();
-  const centerX = markerRect.left + markerRect.width / 2 - timelineRect.left;
-  tip.style.left = `${centerX}px`;
-}
-
-function hideBoardTimelineMarkerTooltip() {
-  boardTimelineTooltip?.classList.add("hidden");
+function seekBoardToClientX(clientX) {
+  if (!boardVideoTimeline || !boardVideoSeek || !reviewerVideo?.src) return;
+  const rect = boardVideoTimeline.getBoundingClientRect();
+  if (rect.width <= 0) return;
+  const pct = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+  const maxSec = boardWindowSec || 30;
+  const t = pct * maxSec;
+  reviewerVideo.currentTime = t;
+  boardSeekSyncing = true;
+  boardVideoSeek.value = String(t);
+  boardSeekSyncing = false;
+  updateBoardVideoHud();
 }
 
 function renderBoardTimelineMarkers() {
   if (!boardTimelineMarkers) return;
   if (!reviewerVideo?.src) {
     boardTimelineMarkers.innerHTML = "";
-    hideBoardTimelineMarkerTooltip();
+    hideTimelineMarkerTooltipFor(boardVideoTimeline);
     return;
   }
   const windowSec = boardWindowSec || 30;
@@ -2368,31 +2405,28 @@ function bindBoardPlayerHandlers() {
     }
   });
 
-  boardVideoSeek?.addEventListener("input", () => {
+  const onBoardSeek = () => {
     if (boardSeekSyncing || !reviewerVideo?.src) return;
     reviewerVideo.currentTime = parseFloat(boardVideoSeek.value);
     updateBoardVideoHud();
+  };
+  boardVideoSeek?.addEventListener("input", onBoardSeek);
+  boardVideoSeek?.addEventListener("change", onBoardSeek);
+
+  boardVideoTimeline?.addEventListener("pointerdown", (e) => {
+    if (!reviewerVideo?.src) return;
+    const marker = e.target.closest(".timeline-marker");
+    if (marker) {
+      reviewerVideo.pause();
+      reviewerVideo.currentTime = parseFloat(marker.dataset.time);
+      updateBoardVideoHud();
+      return;
+    }
+    if (e.target.closest(".video-seek")) return;
+    seekBoardToClientX(e.clientX);
   });
 
-  boardVideoTimeline?.addEventListener("click", (e) => {
-    const marker = e.target.closest(".timeline-marker");
-    if (!marker || !reviewerVideo?.src) return;
-    reviewerVideo.pause();
-    reviewerVideo.currentTime = parseFloat(marker.dataset.time);
-    updateBoardVideoHud();
-  });
-
-  boardVideoTimeline?.addEventListener("mouseover", (e) => {
-    const marker = e.target.closest(".timeline-marker");
-    if (marker) showBoardTimelineMarkerTooltip(marker);
-  });
-
-  boardVideoTimeline?.addEventListener("mouseout", (e) => {
-    const marker = e.target.closest(".timeline-marker");
-    if (!marker) return;
-    const to = e.relatedTarget;
-    if (!to || !marker.contains(to)) hideBoardTimelineMarkerTooltip();
-  });
+  bindTimelineMarkerTooltips(boardVideoTimeline);
 }
 
 function renderVideoList(videos) {

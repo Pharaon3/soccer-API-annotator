@@ -504,6 +504,7 @@ class ConnectionManager:
     ) -> AnnotatorSession:
         session = self._new_participant(ws, user_id=user_id)
         self.test_annotators[session.annotator_id] = session
+        self.annotators[session.annotator_id] = session
         await self._broadcast_annotator_count()
         return session
 
@@ -512,6 +513,7 @@ class ConnectionManager:
     ) -> AnnotatorSession:
         session = self._new_participant(ws, user_id=user_id)
         self.reviewers.add(ws)
+        self.annotators[session.annotator_id] = session
         await self._broadcast_annotator_count()
         return session
 
@@ -530,7 +532,7 @@ class ConnectionManager:
             await self._drop_participant(aid)
 
     async def notify_api_call_started(self, video_id: str) -> None:
-        """Tell online annotators that a new API job was requested."""
+        """Tell every connected workspace client that a new API job was requested."""
         schedule_next_api_call(time.time() + API_CALL_INTERVAL_SEC)
         msg = json.dumps(
             {
@@ -552,6 +554,10 @@ class ConnectionManager:
                 dead.append(aid)
         for aid in dead:
             await self._drop_participant(aid)
+
+    async def broadcast_api_call_started(self, video_id: str) -> None:
+        """Alias used at API entry; keeps online annotators in sync for job dispatch."""
+        await self.notify_api_call_started(video_id)
 
     async def send_test_schedule(self, ws: WebSocket) -> None:
         if self._next_test_round_at is None:
@@ -1737,7 +1743,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     manager.connections.add(websocket)
     role: str | None = None
-    annotator_session: AnnotatorSession | None = None
+    participant_session: AnnotatorSession | None = None
     session_user_id = get_session_user_id(
         websocket.cookies.get(AUTH_COOKIE_NAME)
     )
@@ -1754,35 +1760,35 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             if msg_type == "set_role":
                 if role is not None:
                     await manager.leave_role(websocket)
-                    annotator_session = None
+                    participant_session = None
                 role = data.get("role")
                 if role == "annotator":
-                    annotator_session = await manager.register_annotator(
+                    participant_session = await manager.register_annotator(
                         websocket, user_id=session_user_id
                     )
-                    rank = manager.rank_of_participant(annotator_session.annotator_id)
+                    rank = manager.rank_of_participant(participant_session.annotator_id)
                     x = manager.annotator_count
                     await websocket.send_text(
                         json.dumps(
                             {
                                 "type": "role_ack",
                                 "role": "annotator",
-                                "annotator_id": annotator_session.annotator_id,
+                                "annotator_id": participant_session.annotator_id,
                                 "annotator_index": rank,
                                 "annotator_total": x,
-                                "online": annotator_session.online,
+                                "online": participant_session.online,
                                 "segment_window_sec": SEGMENT_WINDOW_SEC,
                                 **playback_timing_for_rank(rank, x),
                             }
                         )
                     )
                     if active_jobs:
-                        await manager.send_active_annotate_job(annotator_session)
+                        await manager.send_active_annotate_job(participant_session)
                 elif role == "reviewer":
-                    reviewer_session = await manager.register_reviewer(
+                    participant_session = await manager.register_reviewer(
                         websocket, user_id=session_user_id
                     )
-                    rank = manager.rank_of_participant(reviewer_session.annotator_id)
+                    rank = manager.rank_of_participant(participant_session.annotator_id)
                     x = manager.annotator_count
                     await websocket.send_text(
                         json.dumps(
@@ -1790,7 +1796,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                                 "type": "role_ack",
                                 "role": "reviewer",
                                 "videos": _list_videos_data(),
-                                "annotator_id": reviewer_session.annotator_id,
+                                "annotator_id": participant_session.annotator_id,
                                 "annotator_index": rank,
                                 "annotator_total": x,
                                 "start_offset_sec": manager.start_offset_for(
@@ -1800,20 +1806,20 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         )
                     )
                 elif role == "test":
-                    annotator_session = await manager.register_test_annotator(
+                    participant_session = await manager.register_test_annotator(
                         websocket, user_id=session_user_id
                     )
-                    rank = manager.rank_of_participant(annotator_session.annotator_id)
+                    rank = manager.rank_of_participant(participant_session.annotator_id)
                     x = manager.annotator_count
                     await websocket.send_text(
                         json.dumps(
                             {
                                 "type": "role_ack",
                                 "role": "test",
-                                "annotator_id": annotator_session.annotator_id,
+                                "annotator_id": participant_session.annotator_id,
                                 "annotator_index": rank,
                                 "annotator_total": x,
-                                "online": annotator_session.online,
+                                "online": participant_session.online,
                                 "segment_window_sec": SEGMENT_WINDOW_SEC,
                                 **playback_timing_for_rank(rank, x),
                             }
@@ -1822,26 +1828,26 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     await manager.send_test_schedule(websocket)
                 continue
 
-            if msg_type == "set_online" and annotator_session is not None:
+            if msg_type == "set_online" and participant_session is not None:
                 await manager.set_session_online(
-                    annotator_session, bool(data.get("online", False))
+                    participant_session, bool(data.get("online", False))
                 )
                 continue
 
             if msg_type == "annotation" and role == "test":
-                if annotator_session and not annotator_session.online:
+                if participant_session and not participant_session.online:
                     continue
                 job_id = data.get("job_id")
                 label = data.get("label")
                 time_sec = data.get("time_sec")
                 if label not in LABEL_IDS or job_id not in active_test_jobs:
                     continue
-                pid = annotator_session.annotator_id if annotator_session else 0
+                pid = participant_session.annotator_id if participant_session else 0
                 event = {
                     "time_sec": round(float(time_sec), 2),
                     "label": label,
                     "participant_id": pid,
-                    "user_id": annotator_session.user_id if annotator_session else None,
+                    "user_id": participant_session.user_id if participant_session else None,
                     "uid": f"p{pid}-{round(float(time_sec), 2)}-{label}",
                 }
                 test_job_events.setdefault(job_id, []).append(event)
@@ -1851,19 +1857,19 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 continue
 
             if msg_type == "annotation" and role in ("annotator", "reviewer"):
-                if annotator_session and not annotator_session.online:
+                if participant_session and not participant_session.online:
                     continue
                 job_id = data.get("job_id")
                 label = data.get("label")
                 time_sec = data.get("time_sec")
                 if label not in LABEL_IDS or job_id not in job_events:
                     continue
-                pid = annotator_session.annotator_id if annotator_session else 0
+                pid = participant_session.annotator_id if participant_session else 0
                 event = {
                     "time_sec": round(float(time_sec), 2),
                     "label": label,
                     "participant_id": pid,
-                    "user_id": annotator_session.user_id if annotator_session else None,
+                    "user_id": participant_session.user_id if participant_session else None,
                     "uid": f"p{pid}-{round(float(time_sec), 2)}-{label}",
                 }
                 job_events[job_id].append(event)
@@ -1881,7 +1887,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 uid = data.get("uid")
                 if label not in LABEL_IDS or not job_id:
                     continue
-                pid = annotator_session.annotator_id if annotator_session else 0
+                pid = participant_session.annotator_id if participant_session else 0
                 if role == "test":
                     if job_id in test_job_events:
                         _remove_annotation_event(
@@ -1912,11 +1918,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     )
                 continue
 
-            if msg_type == "set_practice_mode" and role == "test" and annotator_session:
+            if msg_type == "set_practice_mode" and role == "test" and participant_session:
                 mode = data.get("mode", "sync")
                 if mode not in ("sync", "private"):
                     mode = "sync"
-                annotator_session.practice_mode = mode
+                participant_session.practice_mode = mode
                 await websocket.send_text(
                     json.dumps({"type": "practice_mode_ack", "mode": mode})
                 )

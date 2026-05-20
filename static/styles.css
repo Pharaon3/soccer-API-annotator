@@ -1293,10 +1293,10 @@ body.page-review .board-video-controller {
 
 .video-seek {
   position: relative;
-  z-index: 2;
+  z-index: 10;
   width: 100%;
   margin: 0;
-  height: 0.35rem;
+  height: 0.85rem;
   -webkit-appearance: none;
   appearance: none;
   background: transparent;
@@ -1348,7 +1348,7 @@ body.page-review .board-video-controller {
   cursor: pointer;
   transform: rotate(45deg);
   transition: transform 0.12s ease, box-shadow 0.12s ease;
-  z-index: 1;
+  z-index: 12;
 }
 
 .timeline-marker:hover,
