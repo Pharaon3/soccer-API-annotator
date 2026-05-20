@@ -108,33 +108,29 @@ body.page-test #events-list li {
   color: var(--text-muted);
 }
 
+.practice-video-panel {
+  display: none;
+}
+
 .practice-video-panel.hidden {
   display: none;
 }
 
-.practice-video-heading {
-  margin: 0 0 0.75rem;
-  font-size: 0.9rem;
-  font-weight: 600;
-  color: var(--muted);
-}
-
 body.page-practice.practice-private .annotator-layout {
-  grid-template-columns: 340px 1fr 260px;
+  grid-template-columns: minmax(0, 350px) 1fr 260px;
 }
 
 body.page-practice.practice-private .practice-video-panel {
   display: flex;
   flex-direction: column;
+  max-width: 350px;
+  width: 100%;
+  min-width: 0;
   min-height: 0;
+  padding: 0.75rem;
+  background: var(--surface);
   border-right: 1px solid #3d3558;
-  border-left: none;
-}
-
-body.page-practice.practice-private .practice-video-panel .date-picker {
-  flex-shrink: 0;
-  margin-bottom: 0.65rem;
-  padding: 0.55rem;
+  overflow: hidden;
 }
 
 body.page-practice.practice-private .practice-video-panel #video-list {
@@ -143,20 +139,30 @@ body.page-practice.practice-private .practice-video-panel #video-list {
   overflow-y: auto;
 }
 
-body.page-practice.practice-private .practice-video-panel #video-list .video-card-btn {
+body.page-practice.practice-private .practice-video-panel.hidden {
+  display: none;
+}
+
+.practice-video-heading {
+  margin: 0.35rem 0 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+body.page-practice .practice-video-panel .date-picker {
+  margin-bottom: 0.65rem;
+  padding: 0.55rem;
+}
+
+body.page-practice .practice-video-panel #video-list .video-card-btn {
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
 }
 
-body.page-practice.practice-private .practice-video-panel .video-list-id {
+body.page-practice .practice-video-panel .video-list-id {
   word-break: break-all;
-}
-
-@media (max-width: 1100px) {
-  body.page-practice.practice-private .annotator-layout {
-    grid-template-columns: 300px 1fr 220px;
-  }
 }
 
 /* Board (review) */
@@ -1991,6 +1997,10 @@ body.annotations-locked .label-btn {
 @media (max-width: 1100px) {
   .reviewer-layout {
     grid-template-columns: 300px 1fr 220px;
+  }
+
+  body.page-practice.practice-private .annotator-layout {
+    grid-template-columns: minmax(0, 300px) 1fr 220px;
   }
 }
 
