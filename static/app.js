@@ -1348,8 +1348,8 @@ function updateVideoHud() {
   if (!video.src) return;
   const globalT = globalTimeFromVideo();
   const frame = timeToFrame(globalT);
-  if (videoTimeDisplay) videoTimeDisplay.textContent = `${formatTime(globalT)}s`;
-  if (videoFrameDisplay) videoFrameDisplay.textContent = `frame ${frame}`;
+  if (videoTimeDisplay) videoTimeDisplay.textContent = globalT.toFixed(1);
+  if (videoFrameDisplay) videoFrameDisplay.textContent = String(frame);
   if (videoSeek) {
     seekSyncing = true;
     videoSeek.min = "0";
@@ -2476,9 +2476,9 @@ function updateBoardVideoHud() {
   if (!reviewerVideo?.src) return;
   const t = reviewerVideo.currentTime || 0;
   const frame = timeToFrame(t);
-  if (boardVideoTimeDisplay) boardVideoTimeDisplay.textContent = `${formatTime(t)}s`;
+  if (boardVideoTimeDisplay) boardVideoTimeDisplay.textContent = t.toFixed(1);
   if (boardVideoFrameDisplay) {
-    boardVideoFrameDisplay.textContent = `frame ${frame}`;
+    boardVideoFrameDisplay.textContent = String(frame);
   }
   if (boardVideoSeek) {
     boardSeekSyncing = true;
