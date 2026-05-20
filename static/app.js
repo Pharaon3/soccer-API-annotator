@@ -1789,6 +1789,7 @@ function resetPracticeJob() {
 
 function updatePracticeModeUI() {
   const sync = practiceMode === "sync";
+  document.body.classList.toggle("practice-private", !sync);
   btnPracticeSync?.classList.toggle("active", sync);
   btnPracticePrivate?.classList.toggle("active", !sync);
   btnPracticeSync?.setAttribute("aria-pressed", sync ? "true" : "false");
