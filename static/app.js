@@ -2409,6 +2409,33 @@ videoTimeline?.addEventListener("pointerdown", (e) => {
   video.currentTime = localTimeFromGlobal(clamped);
   updateVideoHud();
   updatePlayPauseButton();
+
+  videoTimeline.setPointerCapture?.(e.pointerId);
+});
+
+videoTimeline?.addEventListener("pointermove", (e) => {
+  if (!video.src) return;
+  if (!videoTimeline.hasPointerCapture?.(e.pointerId)) return;
+  const rect = videoTimeline.getBoundingClientRect();
+  if (rect.width <= 0) return;
+  const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+  const windowSec = jobWindowSec || 30;
+  const globalT = pct * windowSec;
+  const clamped = Math.min(jobPlayGlobalEnd, Math.max(jobPlayGlobalStart, globalT));
+  video.pause();
+  video.currentTime = localTimeFromGlobal(clamped);
+  updateVideoHud();
+  updatePlayPauseButton();
+});
+
+videoTimeline?.addEventListener("pointerup", (e) => {
+  if (!videoTimeline.hasPointerCapture?.(e.pointerId)) return;
+  videoTimeline.releasePointerCapture?.(e.pointerId);
+});
+
+videoTimeline?.addEventListener("pointercancel", (e) => {
+  if (!videoTimeline.hasPointerCapture?.(e.pointerId)) return;
+  videoTimeline.releasePointerCapture?.(e.pointerId);
 });
 
 bindTimelineMarkerTooltips(videoTimeline);
@@ -2619,6 +2646,24 @@ function bindBoardPlayerHandlers() {
       return;
     }
     seekBoardToClientX(e.clientX);
+    boardVideoTimeline.setPointerCapture?.(e.pointerId);
+  });
+
+  boardVideoTimeline?.addEventListener("pointermove", (e) => {
+    if (!reviewerVideo?.src) return;
+    if (!boardVideoTimeline.hasPointerCapture?.(e.pointerId)) return;
+    reviewerVideo.pause();
+    seekBoardToClientX(e.clientX);
+  });
+
+  boardVideoTimeline?.addEventListener("pointerup", (e) => {
+    if (!boardVideoTimeline.hasPointerCapture?.(e.pointerId)) return;
+    boardVideoTimeline.releasePointerCapture?.(e.pointerId);
+  });
+
+  boardVideoTimeline?.addEventListener("pointercancel", (e) => {
+    if (!boardVideoTimeline.hasPointerCapture?.(e.pointerId)) return;
+    boardVideoTimeline.releasePointerCapture?.(e.pointerId);
   });
 
   bindTimelineMarkerTooltips(boardVideoTimeline);
