@@ -401,6 +401,41 @@ function canEditAnnotations() {
   return !!currentJobId && !annotationsLocked && !!video.src;
 }
 
+const TEXT_ENTRY_INPUT_TYPES = new Set([
+  "text",
+  "search",
+  "password",
+  "email",
+  "url",
+  "tel",
+  "number",
+  "date",
+  "datetime-local",
+  "time",
+  "month",
+  "week",
+]);
+
+function isTextEntryElement(el) {
+  if (!el || el.isContentEditable) return !!el?.isContentEditable;
+  const tag = el.tagName;
+  if (tag === "TEXTAREA") return true;
+  if (tag === "SELECT") return true;
+  if (tag === "INPUT") {
+    const type = (el.getAttribute("type") || "text").toLowerCase();
+    return TEXT_ENTRY_INPUT_TYPES.has(type);
+  }
+  return false;
+}
+
+function isAnnotatorShortcutBlocked(e) {
+  if (e.isComposing) return true;
+  const el = document.activeElement;
+  if (isTextEntryElement(el)) return true;
+  if (rolePickerModal && !rolePickerModal.classList.contains("hidden")) return true;
+  return false;
+}
+
 function setAnnotationsLocked(locked) {
   annotationsLocked = locked;
   document.body.classList.toggle("annotations-locked", locked);
@@ -2128,51 +2163,43 @@ async function switchToRole(selectedRole) {
   send({ type: "set_role", role: selectedRole });
 }
 
-document.addEventListener(
-  "keydown",
-  (e) => {
-    if (!isAnnotatingRole()) return;
+function handleAnnotatorKeydown(e) {
+  if (!isAnnotatingRole()) return;
 
-    if (e.code === "Space") {
-      e.preventDefault();
-      togglePlayPause();
-      return;
-    }
+  if (e.code === "Space") {
+    if (isAnnotatorShortcutBlocked(e)) return;
+    e.preventDefault();
+    togglePlayPause();
+    return;
+  }
 
-    if (e.code === "ArrowLeft") {
-      e.preventDefault();
-      if (!e.repeat) startArrowHold(-1);
-      return;
-    }
+  if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
+    if (isAnnotatorShortcutBlocked(e)) return;
+    e.preventDefault();
+    if (!e.repeat) startArrowHold(e.code === "ArrowLeft" ? -1 : 1);
+    return;
+  }
 
-    if (e.code === "ArrowRight") {
-      e.preventDefault();
-      if (!e.repeat) startArrowHold(1);
-      return;
-    }
+  if (isAnnotatorShortcutBlocked(e)) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
 
-    if (e.target.matches("input, textarea, select")) return;
+  const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  const labelId = keyToLabel[key];
+  if (labelId) {
+    e.preventDefault();
+    annotate(labelId);
+  }
+}
 
-    const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-    const labelId = keyToLabel[key];
-    if (labelId) {
-      e.preventDefault();
-      annotate(labelId);
-    }
-  },
-  true
-);
+function handleAnnotatorKeyup(e) {
+  if (!isAnnotatingRole()) return;
+  if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
+    stopArrowHold();
+  }
+}
 
-document.addEventListener(
-  "keyup",
-  (e) => {
-    if (!isAnnotatingRole()) return;
-    if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
-      stopArrowHold();
-    }
-  },
-  true
-);
+window.addEventListener("keydown", handleAnnotatorKeydown, true);
+window.addEventListener("keyup", handleAnnotatorKeyup, true);
 
 requestNotificationPermission();
 
@@ -2680,6 +2707,11 @@ function renderReviewerEvents(events, labelers) {
   });
 }
 
+function boardVideoPlaybackUrl(item) {
+  const url = item?.video_url?.trim();
+  return url || "";
+}
+
 async function loadReviewerVideo(item, btn) {
   videoList?.querySelectorAll("button.active").forEach((b) => {
     b.classList.remove("active");
@@ -2690,9 +2722,19 @@ async function loadReviewerVideo(item, btn) {
   boardLabelers = {};
   renderBoardTimelineMarkers();
   showBoardVideoLoading();
-  reviewerVideo.src = vid
-    ? new URL(serverVideoApiPath(vid), location.origin).href
-    : item.video_url || "";
+  const playbackUrl = IS_BOARD_PAGE
+    ? boardVideoPlaybackUrl(item)
+    : vid
+      ? new URL(serverVideoApiPath(vid), location.origin).href
+      : item.video_url || "";
+  if (IS_BOARD_PAGE && !playbackUrl) {
+    hideBoardVideoLoading();
+    reviewerVideo.removeAttribute("src");
+    reviewerMeta.innerHTML = `<div><strong>${vid}</strong></div><div class="reviewer-meta-url">No original video URL stored for this item.</div>`;
+    reviewerEvents.innerHTML = "<li><em>Cannot play video without source URL</em></li>";
+    return;
+  }
+  reviewerVideo.src = playbackUrl;
   const labelerLine = formatLabelerList(item.labeler_names);
   reviewerMeta.innerHTML = `<div><strong>${vid}</strong></div>${item.video_url ? `<div class="reviewer-meta-url">${item.video_url}</div>` : ""}<div class="reviewer-meta-labelers">Labeled by: ${labelerLine}</div></div>`;
   try {
