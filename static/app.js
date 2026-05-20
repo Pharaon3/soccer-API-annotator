@@ -1141,9 +1141,13 @@ function connectWebSocket() {
 
     ws.onmessage = (ev) => {
       try {
-        handleMessage(JSON.parse(ev.data));
+        const data = JSON.parse(ev.data);
+        if (IS_ANNOTATOR_PAGE && data?.type) {
+          console.debug("[ws]", data.type, data);
+        }
+        handleMessage(data);
       } catch (err) {
-        console.error("WebSocket message error:", err);
+        console.error("WebSocket message error:", err, ev.data);
       }
     };
 

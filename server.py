@@ -323,6 +323,7 @@ class ActiveJob:
     deadline_at: float
     segment_total: int = 1
     rank_by_participant_id: dict[int, int] = field(default_factory=dict)
+    dispatch_session_ids: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -717,6 +718,12 @@ class ConnectionManager:
             )
             return True
         except Exception:
+            logger.exception(
+                "annotate_start send failed job=%s aid=%s rank=%s",
+                job.job_id,
+                session.annotator_id,
+                rank,
+            )
             return False
 
     def sync_job_online_annotators(self, job: ActiveJob) -> bool:
@@ -726,18 +733,58 @@ class ConnectionManager:
             return False
         job.rank_by_participant_id = self.ranks_for_sessions(online)
         job.segment_total = len(online)
+        job.dispatch_session_ids = [s.annotator_id for s in online]
         return True
 
     async def notify_annotate_ranks(self, job: ActiveJob, ranks: set[int]) -> None:
+        self.sync_job_online_annotators(job)
         dead: list[int] = []
-        for aid, rank in job.rank_by_participant_id.items():
-            if rank not in ranks:
-                continue
+        targets: list[AnnotatorSession] = []
+        for aid in job.dispatch_session_ids:
             session = self.annotators.get(aid)
-            if not session or not session.online:
+            if session and session.online:
+                targets.append(session)
+        if not targets:
+            targets = self.snapshot_online_annotators()
+        if not targets:
+            logger.warning(
+                "annotate_start: no online annotators job=%s ranks=%s map=%s",
+                job.job_id,
+                sorted(ranks),
+                job.rank_by_participant_id,
+            )
+            return
+        sent = 0
+        for session in targets:
+            rank = job.rank_by_participant_id.get(session.annotator_id)
+            if rank is None or rank not in ranks:
+                logger.info(
+                    "annotate_start skip aid=%s rank=%s need=%s map=%s",
+                    session.annotator_id,
+                    rank,
+                    sorted(ranks),
+                    job.rank_by_participant_id,
+                )
                 continue
-            if not await self._send_annotate_start(job, session, rank):
-                dead.append(aid)
+            logger.info(
+                "annotate_start send job=%s aid=%s rank=%s/%s",
+                job.job_id,
+                session.annotator_id,
+                rank,
+                job.segment_total,
+            )
+            if await self._send_annotate_start(job, session, rank):
+                sent += 1
+            else:
+                dead.append(session.annotator_id)
+        if sent == 0:
+            logger.warning(
+                "annotate_start: no messages sent job=%s ranks=%s targets=%s map=%s",
+                job.job_id,
+                sorted(ranks),
+                [s.annotator_id for s in targets],
+                job.rank_by_participant_id,
+            )
         for aid in dead:
             await self._drop_participant(aid)
 
@@ -752,8 +799,16 @@ class ConnectionManager:
         x = job.segment_total
         video_id = job.video_id
 
-        if any(rank == 1 for rank in job.rank_by_participant_id.values()):
-            await self.notify_annotate_ranks(job, {1})
+        rank_one = {r for r in job.rank_by_participant_id.values() if r == 1}
+        if rank_one:
+            await self.notify_annotate_ranks(job, rank_one)
+        elif x >= 1:
+            logger.warning(
+                "dispatch: no rank-1 annotator job=%s map=%s total=%d",
+                job.job_id,
+                job.rank_by_participant_id,
+                x,
+            )
 
         segment_ranks = [rank for rank in range(2, x + 1)]
 
