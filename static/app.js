@@ -59,6 +59,8 @@ const boardVideoFrameDisplay = document.getElementById("board-video-frame-displa
 const boardVideoLoading = document.getElementById("board-video-loading");
 const apiNextCountdown = document.getElementById("api-next-countdown");
 const apiNextValue = document.getElementById("api-next-value");
+const apiNextVideoCountdown = document.getElementById("api-next-video-countdown");
+const apiNextVideoValue = document.getElementById("api-next-video-value");
 
 let boardVideosCache = [];
 const boardDateExpandState = new Map();
@@ -952,6 +954,18 @@ function formatApiCountdown(secLeft) {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
+function showAnnotatorIdleCountdown(text = "—") {
+  if (!IS_ANNOTATOR_PAGE || !apiNextVideoCountdown || !apiNextVideoValue) return;
+  if (currentJobId) return;
+  apiNextVideoValue.textContent = text;
+  apiNextVideoCountdown.classList.remove("hidden");
+}
+
+function hideAnnotatorIdleCountdown() {
+  if (!apiNextVideoCountdown) return;
+  apiNextVideoCountdown.classList.add("hidden");
+}
+
 function stopApiNextCountdown(hide = false) {
   if (apiNextRafId !== null) {
     cancelAnimationFrame(apiNextRafId);
@@ -972,6 +986,7 @@ function showApiNextIdle() {
   apiNextCountdown.classList.remove("hidden");
   apiNextCountdown.classList.add("active");
   apiNextValue.textContent = "—";
+  showAnnotatorIdleCountdown("—");
 }
 
 function startApiNextCountdown(durationSec = API_CALL_INTERVAL_SEC) {
@@ -994,10 +1009,13 @@ function startApiNextCountdownAt(nextCallAtSec) {
     if (leftSec <= 0) {
       apiNextValue.textContent = "0:00";
       apiNextCountdown.classList.remove("urgent", "critical");
+      showAnnotatorIdleCountdown("0:00");
       apiNextRafId = null;
       return;
     }
-    apiNextValue.textContent = formatApiCountdown(leftSec);
+    const display = formatApiCountdown(leftSec);
+    apiNextValue.textContent = display;
+    showAnnotatorIdleCountdown(display);
     apiNextCountdown.classList.toggle("urgent", leftSec <= API_NEXT_WARN_5_MIN_SEC);
     apiNextCountdown.classList.toggle("critical", leftSec <= API_NEXT_WARN_1_MIN_SEC);
 
@@ -1787,6 +1805,7 @@ async function startAnnotatorJob(data) {
   }
 
   stopVideoPoll();
+  hideAnnotatorIdleCountdown();
   currentJobId = data.job_id;
   loadedVideoJobId = data.job_id;
   setAnnotationsLocked(false);
@@ -1877,6 +1896,7 @@ function handleDuplicateCacheHit(data) {
   video.removeAttribute("src");
   updatePlayPauseButton();
   updateVideoHud();
+  showApiNextIdle();
 }
 
 function handleTestStart(data) {
@@ -1920,6 +1940,7 @@ function resetPracticeJob() {
   video.removeAttribute("src");
   updatePlayPauseButton();
   updateVideoHud();
+  if (IS_ANNOTATOR_PAGE && !IS_PRACTICE_PAGE) showApiNextIdle();
 }
 
 function updatePracticeModeUI() {
@@ -2365,8 +2386,30 @@ timelineMarkers?.addEventListener("click", (e) => {
   if (!btn) return;
   clearSelectedEvent();
   const globalTime = parseFloat(btn.dataset.time);
+  video.pause();
   video.currentTime = localTimeFromGlobal(globalTime);
   updateVideoHud();
+  updatePlayPauseButton();
+});
+
+videoTimeline?.addEventListener("pointerdown", (e) => {
+  if (!video.src) return;
+  const marker = e.target.closest(".timeline-marker");
+  if (marker) return;
+  if (e.target.closest(".video-seek")) return;
+
+  const rect = videoTimeline.getBoundingClientRect();
+  if (rect.width <= 0) return;
+  const pct = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+  const windowSec = jobWindowSec || 30;
+  const globalT = pct * windowSec;
+  const clamped = Math.min(jobPlayGlobalEnd, Math.max(jobPlayGlobalStart, globalT));
+
+  clearSelectedEvent();
+  video.pause();
+  video.currentTime = localTimeFromGlobal(clamped);
+  updateVideoHud();
+  updatePlayPauseButton();
 });
 
 bindTimelineMarkerTooltips(videoTimeline);
@@ -2559,8 +2602,10 @@ function bindBoardPlayerHandlers() {
 
   const onBoardSeek = () => {
     if (boardSeekSyncing || !reviewerVideo?.src) return;
+    reviewerVideo.pause();
     reviewerVideo.currentTime = parseFloat(boardVideoSeek.value);
     updateBoardVideoHud();
+    updateBoardPlayPauseButton();
   };
   boardVideoSeek?.addEventListener("input", onBoardSeek);
   boardVideoSeek?.addEventListener("change", onBoardSeek);

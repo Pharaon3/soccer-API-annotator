@@ -671,6 +671,49 @@ body.page-home {
   display: none;
 }
 
+.api-next-video-countdown {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  pointer-events: none;
+  text-align: center;
+  background: linear-gradient(
+    to bottom,
+    rgba(2, 8, 23, 0.16) 0%,
+    rgba(2, 8, 23, 0.26) 45%,
+    rgba(2, 8, 23, 0.2) 100%
+  );
+}
+
+.api-next-video-countdown.hidden {
+  display: none;
+}
+
+.api-next-video-hint {
+  font-size: clamp(1rem, 2.5vw, 1.5rem);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.82);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
+}
+
+.api-next-video-value {
+  font-size: clamp(4rem, 11vw, 8rem);
+  line-height: 0.95;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  color: #f8fafc;
+  text-shadow:
+    0 0 20px rgba(59, 130, 246, 0.55),
+    0 4px 16px rgba(0, 0, 0, 0.82);
+}
+
 .api-countdown.urgent .countdown-value {
   color: #ff8a8a;
   animation: countdown-jump 0.45s ease-in-out infinite;
