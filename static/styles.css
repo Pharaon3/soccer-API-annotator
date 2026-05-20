@@ -1345,13 +1345,17 @@ body.page-review .board-video-controller {
 
 .video-seek::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 18px;
-  height: 22px;
-  margin-top: -9px;
+  width: 22px;
+  height: 26px;
+  margin-top: -8px;
   background: var(--accent);
-  border: 2px solid #fff;
-  border-radius: 50% 50% 50% 50% / 55% 55% 45% 45%;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+  border: none;
+  border-radius: 0;
+  clip-path: path(
+    "M11 2.25a7.75 7.75 0 1 1 0 15.5a7.75 7.75 0 1 1 0-15.5zm0 14.75 3.85 6.75H7.15L11 17z"
+  );
+  box-shadow: none;
+  filter: drop-shadow(0 0 0 2px #fff) drop-shadow(0 2px 6px rgba(0, 0, 0, 0.45));
   cursor: grab;
 }
 
@@ -1360,12 +1364,16 @@ body.page-review .board-video-controller {
 }
 
 .video-seek::-moz-range-thumb {
-  width: 18px;
-  height: 22px;
+  width: 22px;
+  height: 26px;
   background: var(--accent);
-  border: 2px solid #fff;
-  border-radius: 50% 50% 50% 50% / 55% 55% 45% 45%;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+  border: none;
+  border-radius: 0;
+  clip-path: path(
+    "M11 2.25a7.75 7.75 0 1 1 0 15.5a7.75 7.75 0 1 1 0-15.5zm0 14.75 3.85 6.75H7.15L11 17z"
+  );
+  box-shadow: none;
+  filter: drop-shadow(0 0 0 2px #fff) drop-shadow(0 2px 6px rgba(0, 0, 0, 0.45));
   cursor: grab;
 }
 
