@@ -1659,12 +1659,17 @@ async def health() -> dict[str, Any]:
 
 @app.post("/api/auth/login")
 async def auth_login(body: LoginRequest) -> JSONResponse:
+    user_id = body.user_id.strip()
+    print(f"[login] attempt user_id={user_id!r} password_len={len(body.password)}")
     if not static_users_configured():
+        print("[login] rejected: static users not configured")
         raise HTTPException(status_code=503, detail="Login is not configured on this server")
     if not verify_user_credentials(body.user_id, body.password):
+        print(f"[login] failed invalid credentials user_id={user_id!r}")
         raise HTTPException(status_code=401, detail="Invalid user ID or password")
     token = create_session(body.user_id)
-    response = JSONResponse(content={"ok": True, "user_id": body.user_id.strip()})
+    print(f"[login] success user_id={user_id!r}")
+    response = JSONResponse(content={"ok": True, "user_id": user_id})
     response.set_cookie(
         AUTH_COOKIE_NAME,
         token,

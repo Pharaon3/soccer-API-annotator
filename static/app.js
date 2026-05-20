@@ -415,13 +415,22 @@ function roundTimeSec(timeSec) {
   return Math.round(Number(timeSec) * 100) / 100;
 }
 
-function findMyEventAtTime(timeSec) {
+function findMyEventAtTimeAndLabel(timeSec, labelId) {
   const t = roundTimeSec(timeSec);
   return jobEvents.find(
     (e) =>
       e.participant_id === myParticipantId &&
-      roundTimeSec(e.time_sec) === t
+      roundTimeSec(e.time_sec) === t &&
+      e.label === labelId
   );
+}
+
+function markerStackOffsetAtTime(events, timeSec, index) {
+  const t = roundTimeSec(timeSec);
+  const sameFrame = events.filter((e) => roundTimeSec(e.time_sec) === t);
+  const idx = sameFrame.findIndex((e) => e === events[index]);
+  if (idx <= 0) return 0;
+  return idx * 7;
 }
 
 function seekToEvent(event) {
@@ -1312,16 +1321,16 @@ function renderTimelineMarkers() {
     return;
   }
   const windowSec = jobWindowSec || 30;
-  timelineMarkers.innerHTML = jobEvents
-    .slice()
-    .sort((a, b) => a.time_sec - b.time_sec)
-    .map((e) => {
+  const sorted = jobEvents.slice().sort((a, b) => a.time_sec - b.time_sec);
+  timelineMarkers.innerHTML = sorted
+    .map((e, i) => {
       const pct = Math.min(100, Math.max(0, (e.time_sec / windowSec) * 100));
       const color = LABEL_COLORS[e.label] || "#94a3b8";
       const mine = e.participant_id === myParticipantId;
       const labelName = labelDisplayName(e.label);
       const who = mine ? "You" : `Annotator #${e.participant_id}`;
-      return `<button type="button" class="timeline-marker${mine ? " mine" : ""}" data-time="${e.time_sec}" data-frame="${e.frame}" data-label="${e.label}" data-label-name="${labelName}" data-who="${who}" data-event-id="${e.id ?? ""}" style="left:${pct}%;background:${color}" aria-label="${labelName}, frame ${e.frame}"></button>`;
+      const stackY = markerStackOffsetAtTime(sorted, e.time_sec, i);
+      return `<button type="button" class="timeline-marker${mine ? " mine" : ""}" data-time="${e.time_sec}" data-frame="${e.frame}" data-label="${e.label}" data-label-name="${labelName}" data-who="${who}" data-event-id="${e.id ?? ""}" style="left:${pct}%;background:${color};--stack-y:${stackY}px" aria-label="${labelName}, frame ${e.frame}"></button>`;
     })
     .join("");
 }
@@ -1518,10 +1527,10 @@ function removeSessionEvent(eventId) {
 }
 
 function applyLocalAnnotation(labelId, time_sec, frame) {
-  const existing = findMyEventAtTime(time_sec);
+  const existing = findMyEventAtTimeAndLabel(time_sec, labelId);
   if (existing) {
-    if (existing.label === labelId) return;
     removeSessionEvent(existing.id);
+    return;
   }
   const pid = myParticipantId ?? 0;
   const uid = `p${pid}-${time_sec}-${labelId}`;
@@ -1548,10 +1557,10 @@ function annotate(labelId) {
     applyLocalAnnotation(labelId, time_sec, frame);
     return;
   }
-  const existing = findMyEventAtTime(time_sec);
+  const existing = findMyEventAtTimeAndLabel(time_sec, labelId);
   if (existing) {
-    if (existing.label === labelId) return;
     removeSessionEvent(existing.id);
+    return;
   }
   showOverlay(labelId, frame);
   send({
@@ -2346,16 +2355,18 @@ function renderBoardTimelineMarkers() {
     return;
   }
   const windowSec = boardWindowSec || 30;
-  boardTimelineMarkers.innerHTML = boardEvents
+  const sorted = boardEvents
     .slice()
-    .sort((a, b) => Number(a.time_sec) - Number(b.time_sec))
-    .map((e) => {
+    .sort((a, b) => Number(a.time_sec) - Number(b.time_sec));
+  boardTimelineMarkers.innerHTML = sorted
+    .map((e, i) => {
       const pct = Math.min(100, Math.max(0, (Number(e.time_sec) / windowSec) * 100));
       const color = LABEL_COLORS[e.label] || "#94a3b8";
       const labelName = labelDisplayName(e.label);
       const who = labelerName(boardLabelers, e.participant_id, e.user_id);
       const frame = e.frame ?? timeToFrame(e.time_sec);
-      return `<button type="button" class="timeline-marker" data-time="${e.time_sec}" data-frame="${frame}" data-label="${e.label}" data-label-name="${labelName}" data-who="${who}" style="left:${pct}%;background:${color}" aria-label="${labelName}, frame ${frame}"></button>`;
+      const stackY = markerStackOffsetAtTime(sorted, e.time_sec, i);
+      return `<button type="button" class="timeline-marker" data-time="${e.time_sec}" data-frame="${frame}" data-label="${e.label}" data-label-name="${labelName}" data-who="${who}" style="left:${pct}%;background:${color};--stack-y:${stackY}px" aria-label="${labelName}, frame ${frame}"></button>`;
     })
     .join("");
 }

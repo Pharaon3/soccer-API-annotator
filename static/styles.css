@@ -1268,7 +1268,7 @@ body.page-review .board-video-controller {
   position: relative;
   width: 100%;
   min-width: 0;
-  height: 1.6rem;
+  height: 2.35rem;
   display: flex;
   align-items: center;
   overflow: visible;
@@ -1280,9 +1280,9 @@ body.page-review .board-video-controller {
   right: 0;
   top: 50%;
   transform: translateY(-50%);
-  height: 0.35rem;
+  height: 0.65rem;
   display: flex;
-  border-radius: 4px;
+  border-radius: 6px;
   overflow: hidden;
   pointer-events: none;
   z-index: 0;
@@ -1318,11 +1318,11 @@ body.page-review .board-video-controller {
   z-index: 10;
   width: 100%;
   margin: 0;
-  height: 0.85rem;
+  height: 1.35rem;
   -webkit-appearance: none;
   appearance: none;
   background: transparent;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
 }
 
@@ -1331,21 +1331,42 @@ body.page-review .board-video-controller {
   opacity: 0.5;
 }
 
+.video-seek::-webkit-slider-runnable-track {
+  height: 0.65rem;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.video-seek::-moz-range-track {
+  height: 0.65rem;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
 .video-seek::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
+  width: 18px;
+  height: 22px;
+  margin-top: -9px;
   background: var(--accent);
   border: 2px solid #fff;
+  border-radius: 50% 50% 50% 50% / 55% 55% 45% 45%;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+  cursor: grab;
+}
+
+.video-seek::-webkit-slider-thumb:active {
+  cursor: grabbing;
 }
 
 .video-seek::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
+  width: 18px;
+  height: 22px;
   background: var(--accent);
   border: 2px solid #fff;
+  border-radius: 50% 50% 50% 50% / 55% 55% 45% 45%;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45);
+  cursor: grab;
 }
 
 .timeline-markers {
@@ -1358,26 +1379,27 @@ body.page-review .board-video-controller {
 }
 
 .timeline-marker {
+  --stack-y: 0px;
   position: absolute;
   top: 50%;
-  width: 8px;
-  height: 8px;
-  margin-left: -4px;
-  margin-top: -4px;
-  border-radius: 2px;
-  border: 1px solid rgba(255, 255, 255, 0.85);
+  width: 13px;
+  height: 13px;
+  margin-left: -6.5px;
+  margin-top: -6.5px;
+  border-radius: 3px;
+  border: 2px solid rgba(255, 255, 255, 0.9);
   pointer-events: auto;
   cursor: pointer;
-  transform: rotate(45deg);
+  transform: rotate(45deg) translateY(calc(-1 * var(--stack-y)));
   transition: transform 0.12s ease, box-shadow 0.12s ease;
   z-index: 12;
 }
 
 .timeline-marker:hover,
 .timeline-marker:focus-visible {
-  transform: rotate(45deg) scale(1.45);
+  transform: rotate(45deg) translateY(calc(-1 * var(--stack-y))) scale(1.35);
   z-index: 14;
-  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.35);
+  box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.35);
 }
 
 .timeline-marker.mine {
