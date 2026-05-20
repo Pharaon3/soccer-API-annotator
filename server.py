@@ -2012,6 +2012,11 @@ def _static_file(name: str) -> FileResponse:
     return FileResponse(path, media_type=media)
 
 
+@app.get("/favicon.ico")
+async def serve_favicon() -> Response:
+    return Response(status_code=204)
+
+
 def _serve_login_page() -> FileResponse:
     if not static_users_configured():
         raise HTTPException(status_code=503, detail="Login is not configured on this server")
@@ -2083,6 +2088,11 @@ async def redirect_legacy_test() -> RedirectResponse:
 @app.get("/app.js")
 async def serve_app_js() -> FileResponse:
     return _static_file("app.js")
+
+
+@app.get("/polyfills.js")
+async def serve_polyfills_js() -> FileResponse:
+    return _static_file("polyfills.js")
 
 
 @app.get("/login.js")
