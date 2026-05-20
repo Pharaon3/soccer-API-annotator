@@ -10,8 +10,12 @@
 <body class="page-login">
   <div class="card auth-card">
     <h1>Soccer Annotator</h1>
-    <p class="subtitle">Enter password to continue</p>
+    <p class="subtitle">Sign in with your annotator account</p>
     <form id="login-form" class="auth-form">
+      <label>
+        User ID
+        <input type="text" id="login-user-id" autocomplete="username" required autocapitalize="none" spellcheck="false" />
+      </label>
       <label>
         Password
         <input type="password" id="login-password" autocomplete="current-password" required />

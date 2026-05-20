@@ -1,6 +1,6 @@
 {
   "predictions": [
-    { "frame": 83, "action": "pass" },
+    { "frame": 83, "action": "pass", "confidence": 0.74 },
     { "frame": 137, "action": "pass_received" },
     { "frame": 211, "action": "pass" },
     { "frame": 263, "action": "pass_received" },

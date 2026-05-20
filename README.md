@@ -4,10 +4,10 @@ API and web UI for crowd-sourced soccer event annotation on short video clips.
 
 ## Features
 
-- **POST `/api/large_model_processing`** — send a public `video_url`; after 22 seconds returns merged JSON `{ "predictions": [{ "frame", "action" }, ...] }`
+- **POST `/api/large_model_processing`** — send a public `video_url`; after 22 seconds returns merged JSON `{ "predictions": [{ "frame", "action", "confidence" }, ...] }` (`confidence` random in 0.6–0.9 per item)
 - **Server-hosted video** — video id is the original file name (e.g. `b56717cd…` from `…/b56717cd….mp4`); files live in `data/videos/{id}.mp4`; public playback at `GET /api/video/{id}` (no auth); clients poll every 2s until the file is ready
 - **Multi-annotator sync** — each user plays their slice of a 30s window from the same cached file
-- **Cached responses** — repeat requests for the same URL wait 10–15s, then return stored JSON
+- **Cached responses** — annotation starts immediately; in parallel the server checks video id and SHA-256 content hash. Duplicates return saved `predictions` and notify annotators (`duplicate_cache_hit`); hash is stored in `{id}.meta.json`
 - **Web UI** — homepage, annotator (`/annotator`), board (`/board`), or practice (`/practice`)
 
 ## Setup
@@ -17,18 +17,20 @@ python -m venv .venv
 .venv\Scripts\activate          # Windows
 # source .venv/bin/activate     # Linux/macOS
 pip install -r requirements.txt
-cp .env.example .env            # edit API_KEY, APP_PASSWORD_HASH, SESSION_SECRET
+cp .env.example .env            # edit API_KEY, annotator users, SESSION_SECRET
 python server.py
 ```
 
-Open http://localhost:8080 and log in with your app password.
+Open http://localhost:8080 and log in with a configured user ID and password.
 
 ## Environment
 
 | Variable | Description |
 |----------|-------------|
 | `API_KEY` | Required for `POST /api/large_model_processing` (`X-API-Key` header) |
-| `APP_PASSWORD_HASH` | SHA-256 hex of the web UI password |
+| `ANNOTATOR_USER_{1..5}_ID` | Login user ID for each static account |
+| `ANNOTATOR_USER_{1..5}_PASSWORD` | Plain password (hashed at startup) |
+| `ANNOTATOR_USER_{1..5}_PASSWORD_HASH` | Optional SHA-256 hex instead of plain password |
 | `SESSION_SECRET` | Long random string (32+ characters) |
 | `ANNOTATOR_ENV` | Set to `production` for strict startup validation |
 | `HOST` | Bind address (default `0.0.0.0`) |
@@ -37,7 +39,14 @@ Open http://localhost:8080 and log in with your app password.
 | `ANNOTATOR_RELOAD` | Set `true` only for local dev (auto-reload) |
 | `LOG_LEVEL` | `INFO`, `DEBUG`, etc. |
 
-Generate password hash:
+Example `.env` users (edit IDs and passwords):
+
+```env
+ANNOTATOR_USER_1_ID=alice
+ANNOTATOR_USER_1_PASSWORD=secret-for-alice
+```
+
+Optional: store a hash instead of plain text:
 
 ```bash
 python -c "import hashlib; print(hashlib.sha256(b'your-password').hexdigest())"

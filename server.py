@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -11,6 +12,7 @@ import random
 import re
 import time
 import subprocess
+import contextlib
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,17 +26,18 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from pydantic import BaseModel, Field, HttpUrl
 
 from auth import (
-    APP_PASSWORD_HASH,
     AUTH_COOKIE_NAME,
     SESSION_TTL_SEC,
     auth_cookie_params,
     create_session,
+    get_session_user_id,
     purge_expired_sessions,
     revoke_session,
+    static_users_configured,
     validate_startup_config,
     verify_api_key,
-    verify_password_plain,
     verify_session,
+    verify_user_credentials,
 )
 from labels import LABEL_IDS, labels_api_payload
 
@@ -160,6 +163,18 @@ def api_seconds_left(deadline_at: float) -> int:
     return max(0, min(ANNOTATE_DURATION_SEC, int(math.ceil(remaining))))
 
 
+def _random_confidence() -> float:
+    return round(random.uniform(0.6, 0.9), 2)
+
+
+def _api_prediction(frame: int, action: str) -> dict[str, Any]:
+    return {
+        "frame": int(frame),
+        "action": action,
+        "confidence": _random_confidence(),
+    }
+
+
 def events_to_predictions(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert internal job events to API predictions format."""
     predictions: list[dict[str, Any]] = []
@@ -167,14 +182,19 @@ def events_to_predictions(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         frame = e.get("frame")
         if frame is None:
             frame = int(round(float(e["time_sec"]) * SEGMENT_FPS))
-        predictions.append({"frame": int(frame), "action": e["label"]})
+        predictions.append(_api_prediction(int(frame), e["label"]))
     return predictions
 
 
 def annotations_api_payload(data: dict[str, Any]) -> dict[str, Any]:
     """Normalize stored JSON (legacy events or predictions) for API consumers."""
     if "predictions" in data:
-        return {"predictions": data["predictions"]}
+        raw = data["predictions"]
+        return {
+            "predictions": [
+                _api_prediction(p["frame"], p["action"]) for p in raw
+            ]
+        }
     return {"predictions": events_to_predictions(data.get("events", []))}
 
 
@@ -260,6 +280,7 @@ class AnnotateRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
+    user_id: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=256)
 
 
@@ -640,6 +661,41 @@ class ConnectionManager:
             for aid in dead:
                 await self._drop_participant(aid)
 
+    async def notify_duplicate_cache_hit(
+        self,
+        *,
+        requested_video_id: str,
+        matched_video_id: str,
+        reason: str,
+    ) -> None:
+        if reason == "same_id":
+            detail = (
+                f"Video id «{requested_video_id}» was already annotated. "
+                "Returning saved results — no new round started."
+            )
+        else:
+            detail = (
+                f"This file matches earlier video «{matched_video_id}» (same content hash). "
+                "Returning saved results — no new round started."
+            )
+        msg = json.dumps(
+            {
+                "type": "duplicate_cache_hit",
+                "requested_video_id": requested_video_id,
+                "matched_video_id": matched_video_id,
+                "reason": reason,
+                "message": detail,
+            }
+        )
+        dead: list[int] = []
+        for session in list(self.participants.values()):
+            try:
+                await session.websocket.send_text(msg)
+            except Exception:
+                dead.append(session.annotator_id)
+        for aid in dead:
+            await self._drop_participant(aid)
+
     async def notify_reviewers_video_saved(self, video_id: str) -> None:
         del video_id  # broadcast is a simple refresh signal
         msg = json.dumps({"type": "videos_updated"})
@@ -768,16 +824,70 @@ async def split_video_segment(src: Path, dest: Path, start: float, duration: flo
     )
 
 
-def load_cached(video_url: str) -> dict[str, Any] | None:
-    try:
-        vid = video_id_from_url(video_url)
-    except ValueError:
+def file_content_hash(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _read_annotations_payload(video_id: str) -> dict[str, Any] | None:
+    _, events_file, _ = cache_paths(video_id)
+    if not events_file.is_file():
         return None
-    _, events_file, _ = cache_paths(vid)
-    if events_file.is_file():
-        return annotations_api_payload(
-            json.loads(events_file.read_text(encoding="utf-8"))
-        )
+    return annotations_api_payload(
+        json.loads(events_file.read_text(encoding="utf-8"))
+    )
+
+
+def lookup_cached_by_video_id(video_id: str) -> dict[str, Any] | None:
+    return _read_annotations_payload(video_id)
+
+
+def lookup_cached_by_hash(content_hash: str) -> tuple[str, dict[str, Any]] | None:
+    for meta_file in ANNOTATIONS_DIR.glob("*.meta.json"):
+        try:
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if meta.get("content_hash") != content_hash:
+            continue
+        vid = meta.get("video_id")
+        if not vid:
+            continue
+        payload = _read_annotations_payload(vid)
+        if payload is not None:
+            return vid, payload
+    return None
+
+
+async def probe_duplicate_annotations(
+    video_url: str,
+    video_id: str,
+    *,
+    video_ready: asyncio.Event | None = None,
+) -> tuple[str, str, dict[str, Any]] | None:
+    """Return (reason, matched_video_id, payload) if this video was already annotated."""
+    hit = lookup_cached_by_video_id(video_id)
+    if hit is not None:
+        return "same_id", video_id, hit
+
+    _, _, video_path = cache_paths(video_id)
+    if video_ready is not None:
+        try:
+            await asyncio.wait_for(video_ready.wait(), timeout=120.0)
+        except asyncio.TimeoutError:
+            return None
+    else:
+        await ensure_video_downloaded(video_url, video_path)
+    if not video_path.is_file():
+        return None
+    content_hash = await asyncio.to_thread(file_content_hash, video_path)
+    hash_hit = lookup_cached_by_hash(content_hash)
+    if hash_hit is not None:
+        matched_id, payload = hash_hit
+        return "same_hash", matched_id, payload
     return None
 
 
@@ -803,7 +913,11 @@ async def ensure_video_downloaded(video_url: str, video_path: Path) -> None:
     await download_video(video_url, video_path)
 
 
-async def run_annotate_job(video_url: str) -> dict[str, Any]:
+async def run_annotate_job(
+    video_url: str,
+    cancel_event: asyncio.Event | None = None,
+    video_ready: asyncio.Event | None = None,
+) -> dict[str, Any]:
     started_at = time.time()
     deadline_at = started_at + ANNOTATE_DURATION_SEC
     video_id = video_id_from_url(video_url)
@@ -828,17 +942,55 @@ async def run_annotate_job(video_url: str) -> dict[str, Any]:
 
     logger.info("Annotate job %s started video_id=%s annotators=%d", job_id, video_id, x)
 
+    try:
+        return await _run_annotate_job_body(
+            video_url,
+            job_id=job_id,
+            job=job,
+            video_id=video_id,
+            video_path=video_path,
+            deadline_at=deadline_at,
+            timing_started_at=started_at,
+            cancel_event=cancel_event,
+            video_ready=video_ready,
+        )
+    except asyncio.CancelledError:
+        job_events.pop(job_id, None)
+        active_jobs.pop(job_id, None)
+        logger.info("Annotate job %s cancelled (duplicate cache hit)", job_id)
+        raise
+    finally:
+        if video_ready and not video_ready.is_set():
+            video_ready.set()
+
+
+async def _run_annotate_job_body(
+    video_url: str,
+    *,
+    job_id: str,
+    job: ActiveJob,
+    video_id: str,
+    video_path: Path,
+    deadline_at: float,
+    timing_started_at: float,
+    cancel_event: asyncio.Event | None,
+    video_ready: asyncio.Event | None,
+) -> dict[str, Any]:
     timing = JobVideoTiming(
         job_id=job_id,
         video_id=video_id,
-        annotator_count=x,
-        api_started_at=started_at,
+        annotator_count=job.segment_total,
+        api_started_at=timing_started_at,
     )
     global last_annotate_timing
 
     source_cached = video_path.is_file()
     download_started = time.time()
     await ensure_video_downloaded(video_url, video_path)
+    if video_ready:
+        video_ready.set()
+    if cancel_event and cancel_event.is_set():
+        raise asyncio.CancelledError()
     timing.download_sec = time.time() - download_started
     timing.download_cached = source_cached
     timing.download_size_mb = _file_size_mb(video_path)
@@ -850,6 +1002,8 @@ async def run_annotate_job(video_url: str) -> dict[str, Any]:
         path=video_path,
     )
 
+    if cancel_event and cancel_event.is_set():
+        raise asyncio.CancelledError()
     dispatch_started = time.time()
     await manager.dispatch_annotate_job_videos(job, video_path, timing=timing)
     timing.dispatch_wall_sec = time.time() - dispatch_started
@@ -858,14 +1012,18 @@ async def run_annotate_job(video_url: str) -> dict[str, Any]:
     _log_job_timing_summary(timing)
 
     remaining = deadline_at - time.time()
-    if remaining > 0:
-        await asyncio.sleep(remaining)
+    while remaining > 0:
+        if cancel_event and cancel_event.is_set():
+            raise asyncio.CancelledError()
+        await asyncio.sleep(min(0.25, remaining))
+        remaining = deadline_at - time.time()
 
     events = sorted(job_events.pop(job_id, []), key=lambda e: e["time_sec"])
     active_jobs.pop(job_id, None)
 
     predictions = events_to_predictions(events)
     payload = {"predictions": predictions}
+    content_hash = await asyncio.to_thread(file_content_hash, video_path)
     meta, events_file, _ = cache_paths(video_id)
     events_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     meta.write_text(
@@ -873,6 +1031,7 @@ async def run_annotate_job(video_url: str) -> dict[str, Any]:
             {
                 "video_url": video_url,
                 "video_id": video_id,
+                "content_hash": content_hash,
                 "saved_at": time.time(),
                 "local_file": video_path.name if video_path.is_file() else None,
             },
@@ -882,6 +1041,63 @@ async def run_annotate_job(video_url: str) -> dict[str, Any]:
     )
     await manager.notify_reviewers_video_saved(video_id)
     return payload
+
+
+async def run_annotate_with_dedup(video_url: str) -> tuple[dict[str, Any], str | None]:
+    """Run a fresh annotate job; cancel and return cache if duplicate found in parallel."""
+    video_id = video_id_from_url(video_url)
+    cancel_event = asyncio.Event()
+    video_ready = asyncio.Event()
+
+    dup_task = asyncio.create_task(
+        probe_duplicate_annotations(video_url, video_id, video_ready=video_ready)
+    )
+    job_task = asyncio.create_task(
+        run_annotate_job(video_url, cancel_event, video_ready)
+    )
+
+    try:
+        while not job_task.done():
+            if dup_task.done():
+                dup = dup_task.result()
+                if dup is not None:
+                    reason, matched_id, payload = dup
+                    cancel_event.set()
+                    job_task.cancel()
+                    try:
+                        await job_task
+                    except asyncio.CancelledError:
+                        pass
+                    await manager.notify_duplicate_cache_hit(
+                        requested_video_id=video_id,
+                        matched_video_id=matched_id,
+                        reason=reason,
+                    )
+                    logger.info(
+                        "Annotate cache hit url=%s reason=%s matched=%s",
+                        video_url,
+                        reason,
+                        matched_id,
+                    )
+                    return payload, reason
+            await asyncio.sleep(0.05)
+
+        if not dup_task.done():
+            dup_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await dup_task
+
+        return await job_task, None
+    except Exception:
+        if not job_task.done():
+            job_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await job_task
+        if not dup_task.done():
+            dup_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await dup_task
+        raise
 
 
 async def run_test_round() -> None:
@@ -1035,12 +1251,6 @@ async def annotate(
     if not verify_api_key(x_api_key):
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
     video_url = str(body.video_url)
-    cached = load_cached(video_url)
-    if cached is not None:
-        delay = random.uniform(CACHE_DELAY_MIN_SEC, CACHE_DELAY_MAX_SEC)
-        logger.info("Cached video %s — responding in %.2fs", video_url, delay)
-        await asyncio.sleep(delay)
-        return JSONResponse(content=cached)
 
     if manager.annotator_count == 0:
         raise HTTPException(
@@ -1057,17 +1267,19 @@ async def annotate(
     logger.info("Annotate API request received url=%s", video_url)
 
     try:
-        result = await run_annotate_job(video_url)
+        result, cache_reason = await run_annotate_with_dedup(video_url)
     except httpx.HTTPError as exc:
         logger.exception("Annotate job failed")
         raise HTTPException(status_code=502, detail=f"Request failed: {exc}") from exc
 
     logger.info(
-        "Annotate API response ready url=%s elapsed_since_request=%.2fs",
+        "Annotate API response ready url=%s cache=%s elapsed_since_request=%.2fs",
         video_url,
+        cache_reason or "fresh",
         _elapsed_since(api_started_at),
     )
-    return JSONResponse(content=result)
+    headers = {"X-Annotation-Cache": cache_reason} if cache_reason else None
+    return JSONResponse(content=result, headers=headers)
 
 
 def _list_videos_data() -> list[dict[str, Any]]:
@@ -1112,19 +1324,18 @@ async def health() -> dict[str, Any]:
 
 @app.post("/api/auth/login")
 async def auth_login(body: LoginRequest) -> JSONResponse:
-    if not verify_password_plain(body.password):
-        raise HTTPException(status_code=401, detail="Invalid password")
-    print("logging in with password", body.password);
-    print("verify_password_plain", verify_password_plain(body.password));
-    token = create_session()
-    response = JSONResponse(content={"ok": True})
+    if not static_users_configured():
+        raise HTTPException(status_code=503, detail="Login is not configured on this server")
+    if not verify_user_credentials(body.user_id, body.password):
+        raise HTTPException(status_code=401, detail="Invalid user ID or password")
+    token = create_session(body.user_id)
+    response = JSONResponse(content={"ok": True, "user_id": body.user_id.strip()})
     response.set_cookie(
         AUTH_COOKIE_NAME,
         token,
         max_age=SESSION_TTL_SEC,
         **auth_cookie_params(),
     )
-    print("Authentication is OK");
     return response
 
 
@@ -1137,8 +1348,10 @@ async def auth_logout(request: Request) -> JSONResponse:
 
 
 @app.get("/api/auth/status")
-async def auth_status(request: Request) -> dict[str, bool]:
-    return {"authenticated": verify_session(_auth_token(request))}
+async def auth_status(request: Request) -> dict[str, Any]:
+    token = _auth_token(request)
+    user_id = get_session_user_id(token)
+    return {"authenticated": user_id is not None, "user_id": user_id}
 
 
 @app.get("/api/videos")
@@ -1371,7 +1584,7 @@ def _static_file(name: str) -> FileResponse:
 
 
 def _serve_login_page() -> FileResponse:
-    if not APP_PASSWORD_HASH:
+    if not static_users_configured():
         raise HTTPException(status_code=503, detail="Login is not configured on this server")
     return _static_file("login.html")
 

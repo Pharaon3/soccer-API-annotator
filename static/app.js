@@ -1289,6 +1289,15 @@ function handleMessage(data) {
         send({ type: "list_videos" });
       }
       break;
+    case "duplicate_cache_hit":
+      if (data.message) {
+        showConnectionStatus(data.message, true);
+      }
+      stopApiCountdown(true);
+      setAnnotationsLocked(true);
+      currentJobId = null;
+      loadedVideoJobId = null;
+      break;
     default:
       break;
   }

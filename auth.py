@@ -16,14 +16,48 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 API_KEY = os.getenv("API_KEY", "")
-APP_PASSWORD_HASH = os.getenv("APP_PASSWORD_HASH", "").strip().lower()
 SESSION_SECRET = os.getenv("SESSION_SECRET", "")
 AUTH_COOKIE_NAME = "annotator_auth"
 SESSION_TTL_SEC = 60 * 60 * 24 * 7
 _SESSION_PURGE_INTERVAL_SEC = 300
+STATIC_USER_SLOTS = 5
 
-_sessions: dict[str, float] = {}
+_sessions: dict[str, tuple[float, str]] = {}
 _last_session_purge = 0.0
+
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+
+def _load_static_users() -> dict[str, str]:
+    """Map user id -> password hash from ANNOTATOR_USER_{1..5}_ID and _PASSWORD(_HASH)."""
+    users: dict[str, str] = {}
+    for index in range(1, STATIC_USER_SLOTS + 1):
+        user_id = os.getenv(f"ANNOTATOR_USER_{index}_ID", "").strip()
+        if not user_id:
+            continue
+        password_hash = os.getenv(
+            f"ANNOTATOR_USER_{index}_PASSWORD_HASH", ""
+        ).strip().lower()
+        if not password_hash:
+            plain = os.getenv(f"ANNOTATOR_USER_{index}_PASSWORD", "")
+            if plain:
+                password_hash = hash_password(plain)
+        if password_hash:
+            users[user_id] = password_hash
+    return users
+
+
+STATIC_USERS: dict[str, str] = _load_static_users()
+
+
+def static_users_configured() -> bool:
+    return bool(STATIC_USERS)
+
+
+def list_static_user_ids() -> list[str]:
+    return sorted(STATIC_USERS.keys())
 
 
 def auth_cookie_params() -> dict[str, bool | str]:
@@ -36,34 +70,36 @@ def auth_cookie_params() -> dict[str, bool | str]:
     }
 
 
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
-
-
-def verify_password_plain(password: str) -> bool:
-    if not APP_PASSWORD_HASH:
+def verify_user_credentials(user_id: str, password: str) -> bool:
+    expected_hash = STATIC_USERS.get(user_id.strip())
+    if not expected_hash:
         return False
-    return secrets.compare_digest(hash_password(password), APP_PASSWORD_HASH)
+    return secrets.compare_digest(hash_password(password), expected_hash)
 
 
-def create_session() -> str:
+def create_session(user_id: str) -> str:
     purge_expired_sessions()
     token = secrets.token_urlsafe(32)
-    _sessions[token] = time.time() + SESSION_TTL_SEC
+    _sessions[token] = (time.time() + SESSION_TTL_SEC, user_id.strip())
     return token
 
 
 def verify_session(token: str | None) -> bool:
+    return get_session_user_id(token) is not None
+
+
+def get_session_user_id(token: str | None) -> str | None:
     if not token:
-        return False
+        return None
     purge_expired_sessions()
-    expires = _sessions.get(token)
-    if expires is None:
-        return False
+    entry = _sessions.get(token)
+    if entry is None:
+        return None
+    expires, user_id = entry
     if expires < time.time():
         _sessions.pop(token, None)
-        return False
-    return True
+        return None
+    return user_id
 
 
 def revoke_session(token: str | None) -> None:
@@ -77,7 +113,7 @@ def purge_expired_sessions() -> None:
     if now - _last_session_purge < _SESSION_PURGE_INTERVAL_SEC:
         return
     _last_session_purge = now
-    expired = [token for token, exp in _sessions.items() if exp < now]
+    expired = [token for token, (exp, _) in _sessions.items() if exp < now]
     for token in expired:
         _sessions.pop(token, None)
 
@@ -92,8 +128,13 @@ def validate_startup_config() -> None:
     """Log warnings for missing or insecure configuration."""
     if not API_KEY:
         logger.warning("API_KEY is not set — POST /api/large_model_processing will reject requests")
-    if not APP_PASSWORD_HASH:
-        logger.warning("APP_PASSWORD_HASH is not set — web login will fail")
+    if not STATIC_USERS:
+        logger.warning(
+            "No annotator users configured — set ANNOTATOR_USER_1_ID … "
+            "ANNOTATOR_USER_5_ID (and passwords) in .env"
+        )
+    else:
+        logger.info("Static annotator users loaded: %s", ", ".join(list_static_user_ids()))
     if not SESSION_SECRET:
         logger.warning("SESSION_SECRET is not set — set a long random value in production")
     elif len(SESSION_SECRET) < 32:
@@ -104,7 +145,7 @@ def validate_startup_config() -> None:
             name
             for name, value in (
                 ("API_KEY", API_KEY),
-                ("APP_PASSWORD_HASH", APP_PASSWORD_HASH),
+                ("ANNOTATOR_USER_*", STATIC_USERS),
                 ("SESSION_SECRET", SESSION_SECRET),
             )
             if not value
