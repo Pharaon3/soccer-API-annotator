@@ -1281,7 +1281,7 @@ body.page-review .board-video-controller {
 
 .timeline-live-readout {
   position: absolute;
-  top: calc(-1.5rem - 20px);
+  top: calc(-1.5rem - 40px);
   left: 0;
   transform: translateX(-50%);
   z-index: 16;
