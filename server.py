@@ -55,6 +55,7 @@ DATA_DIR = ROOT / "data"
 VIDEOS_DIR = DATA_DIR / "videos"
 ANNOTATIONS_DIR = DATA_DIR / "annotations"
 STATIC_DIR = ROOT / "static"
+VIDEO_PREPARE_LOG = DATA_DIR / "video_prepare.log"
 
 
 def ensure_data_dirs() -> None:
@@ -64,6 +65,25 @@ def ensure_data_dirs() -> None:
 
 ensure_data_dirs()
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def log_video_prepare_timing(
+    *,
+    job_id: str,
+    video_id: str,
+    download_sec: float,
+    divide_sec: float,
+    total_sec: float,
+) -> None:
+    line = (
+        f"{time.strftime('%Y-%m-%d %H:%M:%S')} "
+        f"job_id={job_id} video_id={video_id} "
+        f"download_original_sec={download_sec:.2f} "
+        f"divide_separate_video_sec={divide_sec:.2f} "
+        f"prepare_total_sec={total_sec:.2f}\n"
+    )
+    with VIDEO_PREPARE_LOG.open("a", encoding="utf-8") as f:
+        f.write(line)
 
 
 def _env_float(name: str, default: float) -> float:
@@ -472,6 +492,8 @@ class TestJobState:
     video_url: str
     segment_total: int
     rank_by_participant_id: dict[int, int]
+    download_sec: float = 0.0
+    divide_sec: float = 0.0
 
 
 class AnnotateRequest(BaseModel):
@@ -1116,6 +1138,7 @@ class ConnectionManager:
         deadline_at: float,
         duration_sec: float,
     ) -> None:
+        divide_started = time.time()
         rank_one = {r for r in state.rank_by_participant_id.values() if r == 1}
         if rank_one:
             await self.broadcast_test_job(
@@ -1140,6 +1163,7 @@ class ConnectionManager:
 
         if segment_ranks:
             await asyncio.gather(*[encode_and_notify(rank) for rank in segment_ranks])
+        state.divide_sec = time.time() - divide_started
 
     async def broadcast_job_event(
         self,
@@ -1574,6 +1598,13 @@ async def _run_annotate_job_body(
     timing.dispatch_wall_sec = time.time() - dispatch_started
     timing.completed_at = time.time()
     last_annotate_timing = timing
+    log_video_prepare_timing(
+        job_id=job_id,
+        video_id=video_id,
+        download_sec=timing.download_sec or 0.0,
+        divide_sec=timing.dispatch_wall_sec or 0.0,
+        total_sec=timing.completed_at - timing.api_started_at,
+    )
     _log_job_timing_summary(timing)
 
     remaining = deadline_at - time.time()
@@ -1727,7 +1758,9 @@ async def run_test_round() -> None:
     video_path = VIDEOS_DIR / f"{video_id}.mp4"
     if remote_url:
         try:
+            download_started = time.time()
             await ensure_video_downloaded(remote_url, video_path)
+            state.download_sec = time.time() - download_started
         except httpx.HTTPError:
             logger.exception("Test video download failed for %s", remote_url)
             active_test_jobs.discard(job_id)
@@ -1748,6 +1781,7 @@ async def run_test_round() -> None:
 
     test_duration_sec = random_annotate_duration_sec()
     test_deadline = time.time() + test_duration_sec
+    prepare_started = time.time()
     try:
         logger.info("Test job %s: %d users", job_id, state.segment_total)
         await manager.dispatch_test_job_videos(
@@ -1755,6 +1789,13 @@ async def run_test_round() -> None:
             video_path,
             deadline_at=test_deadline,
             duration_sec=test_duration_sec,
+        )
+        log_video_prepare_timing(
+            job_id=job_id,
+            video_id=video_id,
+            download_sec=state.download_sec,
+            divide_sec=state.divide_sec,
+            total_sec=time.time() - prepare_started,
         )
         remaining = test_deadline - time.time()
         if remaining > 0:
