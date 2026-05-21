@@ -106,11 +106,23 @@ RANDOM_FALLBACK_RESPONSE_DELAY_SEC = _env_float(
 )
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r, using default %d", name, raw, default)
+        return default
+
+
 def random_annotate_duration_sec() -> float:
     return random.uniform(ANNOTATE_DURATION_MIN_SEC, ANNOTATE_DURATION_MAX_SEC)
 
 
-PRESENCE_IDLE_SEC = 15 * 60
+PRESENCE_IDLE_MINUTES = max(1, _env_int("PRESENCE_IDLE_MINUTES", 15))
+PRESENCE_IDLE_SEC = PRESENCE_IDLE_MINUTES * 60
 SEGMENT_WINDOW_SEC = 30
 SEGMENT_PADDING_SEC = 1.0
 FIRST_PART_EXTRA_SEC = 2.0
@@ -396,6 +408,7 @@ def annotator_status_payload(session: AnnotatorSession | None) -> dict[str, Any]
     return {
         "status": "online" if session.online else "idle",
         "annotator_id": session.annotator_id,
+        "user_id": session.user_id,
         "joined_at": session.joined_at,
     }
 
@@ -729,6 +742,20 @@ class ConnectionManager:
             pass
         await self._broadcast_annotator_count()
         await self.broadcast_annotator_roster()
+
+    async def set_user_online(self, user_id: str, online: bool) -> bool:
+        target = next(
+            (
+                session
+                for session in self.snapshot_participants()
+                if session.user_id == user_id
+            ),
+            None,
+        )
+        if target is None:
+            return False
+        await self.set_session_online(target, online)
+        return True
 
     async def _broadcast_annotator_count(self) -> None:
         msg = json.dumps(
@@ -2007,6 +2034,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                                 "annotator_index": rank,
                                 "annotator_total": x,
                                 "online": participant_session.online,
+                                "presence_idle_minutes": PRESENCE_IDLE_MINUTES,
                                 "segment_window_sec": SEGMENT_WINDOW_SEC,
                                 **playback_timing_for_rank(rank, x),
                             }
@@ -2054,6 +2082,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                                 "annotator_index": rank,
                                 "annotator_total": x,
                                 "online": participant_session.online,
+                                "presence_idle_minutes": PRESENCE_IDLE_MINUTES,
                                 "segment_window_sec": SEGMENT_WINDOW_SEC,
                                 **playback_timing_for_rank(rank, x),
                             }
@@ -2067,6 +2096,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await manager.set_session_online(
                     participant_session, bool(data.get("online", False))
                 )
+                continue
+
+            if msg_type == "set_user_idle":
+                target_user_id = str(data.get("user_id") or "").strip()
+                if target_user_id:
+                    await manager.set_user_online(target_user_id, False)
                 continue
 
             if msg_type == "annotation" and role == "test":

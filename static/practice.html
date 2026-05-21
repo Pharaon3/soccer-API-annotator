@@ -101,9 +101,20 @@
 
   <div id="presence-overlay" class="presence-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="presence-overlay-title">
     <div class="presence-overlay-card">
-      <p id="presence-overlay-title" class="presence-overlay-title">You've been idle for 15 minutes</p>
+      <p id="presence-overlay-title" class="presence-overlay-title">You've been idle</p>
       <p class="presence-overlay-hint">You are offline and will not receive new tasks until you confirm.</p>
       <button type="button" id="btn-presence-confirm" class="presence-overlay-btn">I am Online</button>
+    </div>
+  </div>
+
+  <div id="kick-annotator-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="kick-annotator-title">
+    <div class="modal-card">
+      <h2 id="kick-annotator-title">Make annotator idle?</h2>
+      <p id="kick-annotator-message">Really kick this annotator?</p>
+      <div class="role-buttons">
+        <button type="button" id="btn-kick-annotator-yes">Yes</button>
+        <button type="button" id="btn-kick-annotator-cancel" class="modal-cancel">Cancel</button>
+      </div>
     </div>
   </div>
 

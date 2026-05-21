@@ -926,6 +926,17 @@ body.page-home {
     0 0 10px rgba(0, 255, 106, 0.28);
 }
 
+.annotator-roster-item.can-kick {
+  cursor: pointer;
+}
+
+.annotator-roster-item.can-kick:hover,
+.annotator-roster-item.can-kick:focus-visible {
+  background: rgba(0, 255, 106, 0.12);
+  outline: 2px solid rgba(0, 255, 106, 0.75);
+  outline-offset: 2px;
+}
+
 .annotator-roster-item.idle .annotator-roster-dot {
   background: #ffe600;
   box-shadow:
@@ -1674,18 +1685,22 @@ body.page-review .board-video-controller {
 }
 
 #events-list li,
-#events-list .event-row {
+#events-list .event-row,
+#reviewer-events li,
+#reviewer-events .event-row {
   border-left-width: 4px;
   border-left-style: solid;
 }
 
-#events-list .event-row {
+#events-list .event-row,
+#reviewer-events .event-row {
   display: flex;
   align-items: stretch;
   gap: 0;
 }
 
-#events-list .event-goto {
+#events-list .event-goto,
+#reviewer-events .event-goto {
   flex: 1;
   min-width: 0;
 }
@@ -1820,7 +1835,8 @@ body.page-review .board-video-controller {
   font-size: 0.9rem;
 }
 
-#events-list .event-item {
+#events-list .event-item,
+#reviewer-events .event-item {
   text-align: left;
   padding: 0.45rem 0.55rem;
   background: transparent;
@@ -1833,7 +1849,8 @@ body.page-review .board-video-controller {
   line-height: 1.35;
 }
 
-#events-list .event-goto:hover {
+#events-list .event-goto:hover,
+#reviewer-events .event-goto:hover {
   background: var(--surface2);
 }
 
@@ -2113,27 +2130,6 @@ body.annotations-locked .label-btn {
   color: #cbd5e1;
 }
 
-#reviewer-events .event-row {
-  margin-bottom: 0.35rem;
-}
-
-#reviewer-events .event-item {
-  width: 100%;
-  text-align: left;
-  padding: 0.45rem 0.55rem;
-  background: transparent;
-  border: none;
-  color: var(--text);
-  cursor: pointer;
-  font-size: 0.82rem;
-  line-height: 1.35;
-}
-
-#reviewer-events .event-item:hover {
-  background: rgba(255, 255, 255, 0.04);
-  border-radius: 6px;
-}
-
 .reviewer-main {
   padding: 1rem 1.5rem;
   overflow: hidden;
@@ -2178,23 +2174,6 @@ body.annotations-locked .label-btn {
 
 .reviewer-events-sidebar #reviewer-events::-webkit-scrollbar {
   display: none;
-}
-
-.reviewer-events-sidebar #reviewer-events li button {
-  width: 100%;
-  text-align: left;
-  padding: 0.4rem 0.5rem;
-  background: transparent;
-  border: none;
-  border-radius: 6px;
-  color: var(--text);
-  cursor: pointer;
-  font-family: ui-monospace, monospace;
-  font-size: 0.88rem;
-}
-
-.reviewer-events-sidebar #reviewer-events li button:hover {
-  background: var(--surface2);
 }
 
 @media (max-width: 900px) {

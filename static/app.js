@@ -8,7 +8,7 @@ const API_NEXT_WARN_5_MIN_SEC = 5 * 60;
 const API_NEXT_WARN_1_MIN_SEC = 60;
 const VIDEO_POLL_INTERVAL_MS = 2000;
 const ANNOTATOR_POST_DEADLINE_KEEP_MS = 60 * 1000;
-const PRESENCE_IDLE_MS = 15 * 60 * 1000;
+const DEFAULT_PRESENCE_IDLE_MINUTES = 15;
 const PRESENCE_ACTIVE_RECHECK_MS = 30 * 1000;
 const PAGE = document.body.dataset.page || "";
 const IS_PRACTICE_PAGE = PAGE === "practice" || PAGE === "train";
@@ -93,7 +93,12 @@ let timelineTooltip = null;
 
 const btnPresence = document.getElementById("btn-presence");
 const presenceOverlay = document.getElementById("presence-overlay");
+const presenceOverlayTitle = document.getElementById("presence-overlay-title");
 const btnPresenceConfirm = document.getElementById("btn-presence-confirm");
+const kickAnnotatorModal = document.getElementById("kick-annotator-modal");
+const kickAnnotatorMessage = document.getElementById("kick-annotator-message");
+const btnKickAnnotatorYes = document.getElementById("btn-kick-annotator-yes");
+const btnKickAnnotatorCancel = document.getElementById("btn-kick-annotator-cancel");
 const btnPracticeSync = document.getElementById("btn-practice-sync");
 const btnPracticePrivate = document.getElementById("btn-practice-private");
 const practiceModeHint = document.getElementById("practice-mode-hint");
@@ -103,6 +108,8 @@ const practiceEventsHeading = document.getElementById("practice-events-heading")
 let presenceOnline = true;
 let presenceIdleTimer = null;
 let presenceListenersBound = false;
+let presenceIdleMinutes = DEFAULT_PRESENCE_IDLE_MINUTES;
+let pendingKickAnnotator = null;
 
 const PARTICIPANT_COLORS = [
   "#3d8bfd",
@@ -627,6 +634,25 @@ function hidePresenceOverlay() {
   document.body.classList.remove("presence-prompt-open");
 }
 
+function presenceIdleMs() {
+  return presenceIdleMinutes * 60 * 1000;
+}
+
+function formatPresenceIdleMinutes(minutes) {
+  return minutes === 1 ? "1 minute" : `${minutes} minutes`;
+}
+
+function setPresenceIdleMinutes(minutes) {
+  const n = Math.floor(Number(minutes));
+  presenceIdleMinutes = Number.isFinite(n) && n > 0
+    ? n
+    : DEFAULT_PRESENCE_IDLE_MINUTES;
+  if (presenceOverlayTitle) {
+    presenceOverlayTitle.textContent = `You've been idle for ${formatPresenceIdleMinutes(presenceIdleMinutes)}`;
+  }
+  resetPresenceIdleTimer();
+}
+
 function sendPresenceOnline(online) {
   send({ type: "set_online", online: !!online });
 }
@@ -682,7 +708,7 @@ function resetPresenceIdleTimer() {
     presenceIdleTimer = setTimeout(resetPresenceIdleTimer, PRESENCE_ACTIVE_RECHECK_MS);
     return;
   }
-  presenceIdleTimer = setTimeout(onPresenceIdleTimeout, PRESENCE_IDLE_MS);
+  presenceIdleTimer = setTimeout(onPresenceIdleTimeout, presenceIdleMs());
 }
 
 function onPresenceUserActivity() {
@@ -731,6 +757,11 @@ function bindPresenceControls() {
   btnPresenceConfirm?.addEventListener("click", () => {
     setPresenceOnline(true);
   });
+  btnKickAnnotatorYes?.addEventListener("click", confirmKickAnnotator);
+  btnKickAnnotatorCancel?.addEventListener("click", hideKickAnnotatorModal);
+  kickAnnotatorModal?.addEventListener("click", (e) => {
+    if (e.target === kickAnnotatorModal) hideKickAnnotatorModal();
+  });
 }
 
 function handlePresenceStatus(data) {
@@ -750,6 +781,30 @@ function formatAnnotatorName(name) {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+function hideKickAnnotatorModal() {
+  pendingKickAnnotator = null;
+  kickAnnotatorModal?.classList.add("hidden");
+}
+
+function showKickAnnotatorModal(annotator) {
+  if (!kickAnnotatorModal || !annotator?.user_id) return;
+  pendingKickAnnotator = annotator;
+  const name = formatAnnotatorName(annotator.user_id);
+  if (kickAnnotatorMessage) {
+    kickAnnotatorMessage.textContent = `Really kick ${name}? They will become idle until they click "I am Online".`;
+  }
+  kickAnnotatorModal.classList.remove("hidden");
+}
+
+function confirmKickAnnotator() {
+  if (!pendingKickAnnotator?.user_id) {
+    hideKickAnnotatorModal();
+    return;
+  }
+  send({ type: "set_user_idle", user_id: pendingKickAnnotator.user_id });
+  hideKickAnnotatorModal();
+}
+
 function renderAnnotatorRoster(annotators = []) {
   if (!annotatorRoster) return;
   annotatorRoster.innerHTML = "";
@@ -757,6 +812,19 @@ function renderAnnotatorRoster(annotators = []) {
     const status = normalizeAnnotatorStatus(annotator.status);
     const item = document.createElement("li");
     item.className = `annotator-roster-item ${status}`;
+    const canKick = status === "online" && !!annotator.user_id;
+    if (canKick) {
+      item.classList.add("can-kick");
+      item.setAttribute("role", "button");
+      item.tabIndex = 0;
+      item.title = "Click to make this annotator idle";
+      item.addEventListener("click", () => showKickAnnotatorModal(annotator));
+      item.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        e.preventDefault();
+        showKickAnnotatorModal(annotator);
+      });
+    }
 
     const name = document.createElement("span");
     name.className = "annotator-roster-name";
@@ -2207,6 +2275,7 @@ function handleMessage(data) {
   switch (data.type) {
     case "role_ack":
       if (data.annotator_id != null) myParticipantId = data.annotator_id;
+      setPresenceIdleMinutes(data.presence_idle_minutes);
       if (data.role === "test") {
         sessionInfo.textContent = `Practice test · annotator #${data.annotator_index} of ${data.annotator_total} · offset ${Number(data.start_offset_sec ?? 0).toFixed(2)}s`;
         if (!pendingTestJob) {
@@ -2974,10 +3043,9 @@ function renderReviewerEvents(events, labelers) {
       const pid = e.participant_id ?? 1;
       const annotatorColor = participantColor(pid);
       const eventColor = LABEL_COLORS[e.label] || "#94a3b8";
-      const who = labelerName(labelers, pid, e.user_id);
       const labelName = labelDisplayName(e.label);
       const frame = e.frame ?? timeToFrame(e.time_sec);
-      const text = `frame ${frame} · ${Number(e.time_sec).toFixed(2)}s — ${labelName} (${who})`;
+      const text = `${frame} - ${labelName}`;
       return `<li class="event-row" style="border-left: 4px solid ${annotatorColor}; background: color-mix(in srgb, ${eventColor} 20%, transparent)"><button type="button" class="event-item event-goto" data-time="${e.time_sec}">${text}</button></li>`;
     });
   reviewerEvents.innerHTML = rows.length
