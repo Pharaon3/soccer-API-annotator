@@ -1610,9 +1610,16 @@ function clampPlaybackToSegment() {
     video.currentTime = start;
   }
   if (Number.isFinite(end) && video.currentTime >= end - 0.05) {
-    video.pause();
-    video.currentTime = end;
+    video.currentTime = start;
+    video.play().catch(() => {});
   }
+}
+
+function loopAnnotatorVideo() {
+  if (!canEditAnnotations()) return;
+  const { start } = playbackLocalBounds();
+  video.currentTime = start;
+  video.play().catch(() => {});
 }
 
 function stepFrame(delta) {
@@ -2640,6 +2647,7 @@ if (video) {
   video.addEventListener("play", updatePlayPauseButton);
   video.addEventListener("pause", updatePlayPauseButton);
   video.addEventListener("seeked", updateVideoHud);
+  video.addEventListener("ended", loopAnnotatorVideo);
   video.addEventListener("loadedmetadata", () => {
     estimateFps();
     updateTimelineSeekRange();
