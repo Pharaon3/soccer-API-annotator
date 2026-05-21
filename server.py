@@ -1053,10 +1053,15 @@ class ConnectionManager:
         duration_sec: float,
     ) -> dict[str, Any]:
         x = state.segment_total
+        if annotator_uses_original_video(rank):
+            playback_video_id = state.video_id
+        else:
+            playback_video_id = segment_video_id(state.video_id, rank)
         return {
             "type": "test_start",
             "job_id": state.job_id,
-            "video_id": state.video_id,
+            "video_id": playback_video_id,
+            "original_video_id": state.video_id,
             "duration_sec": round(duration_sec, 2),
             "seconds_left": job_seconds_left(deadline_at, duration_sec),
             "video_file": public_video_path(state.video_id),
@@ -1069,13 +1074,20 @@ class ConnectionManager:
         }
 
     async def broadcast_test_job(
-        self, state: TestJobState, *, deadline_at: float, duration_sec: float
+        self,
+        state: TestJobState,
+        *,
+        deadline_at: float,
+        duration_sec: float,
+        ranks: set[int] | None = None,
     ) -> None:
         dead: list[int] = []
         for aid in sorted(
             state.rank_by_participant_id, key=state.rank_by_participant_id.get
         ):
             rank = state.rank_by_participant_id[aid]
+            if ranks is not None and rank not in ranks:
+                continue
             session = self.test_annotators.get(aid)
             if not session or session.practice_mode != "sync":
                 continue
@@ -1083,11 +1095,11 @@ class ConnectionManager:
                 await session.websocket.send_text(
                     json.dumps(
                         self._test_start_payload(
-                                state,
-                                rank,
-                                session,
-                                deadline_at=deadline_at,
-                                duration_sec=duration_sec,
+                            state,
+                            rank,
+                            session,
+                            deadline_at=deadline_at,
+                            duration_sec=duration_sec,
                         )
                     )
                 )
@@ -1095,6 +1107,39 @@ class ConnectionManager:
                 dead.append(session.annotator_id)
         for aid in dead:
             del self.test_annotators[aid]
+
+    async def dispatch_test_job_videos(
+        self,
+        state: TestJobState,
+        video_path: Path,
+        *,
+        deadline_at: float,
+        duration_sec: float,
+    ) -> None:
+        rank_one = {r for r in state.rank_by_participant_id.values() if r == 1}
+        if rank_one:
+            await self.broadcast_test_job(
+                state,
+                deadline_at=deadline_at,
+                duration_sec=duration_sec,
+                ranks=rank_one,
+            )
+
+        segment_ranks = [rank for rank in range(2, state.segment_total + 1)]
+
+        async def encode_and_notify(rank: int) -> None:
+            start, play_end, _, _ = padded_playback_bounds(rank, state.segment_total)
+            dest = segment_video_path(state.video_id, rank)
+            await split_video_segment(video_path, dest, start, play_end - start)
+            await self.broadcast_test_job(
+                state,
+                deadline_at=deadline_at,
+                duration_sec=duration_sec,
+                ranks={rank},
+            )
+
+        if segment_ranks:
+            await asyncio.gather(*[encode_and_notify(rank) for rank in segment_ranks])
 
     async def broadcast_job_event(
         self,
@@ -1705,8 +1750,11 @@ async def run_test_round() -> None:
     test_deadline = time.time() + test_duration_sec
     try:
         logger.info("Test job %s: %d users", job_id, state.segment_total)
-        await manager.broadcast_test_job(
-            state, deadline_at=test_deadline, duration_sec=test_duration_sec
+        await manager.dispatch_test_job_videos(
+            state,
+            video_path,
+            deadline_at=test_deadline,
+            duration_sec=test_duration_sec,
         )
         remaining = test_deadline - time.time()
         if remaining > 0:
@@ -1715,6 +1763,7 @@ async def run_test_round() -> None:
         active_test_jobs.discard(job_id)
         test_job_events.pop(job_id, None)
         test_job_states.pop(job_id, None)
+        cleanup_segment_videos(video_id)
 
     manager.schedule_next_test_round()
     await manager.broadcast_test_schedule()
