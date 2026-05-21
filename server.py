@@ -352,6 +352,18 @@ class AnnotatorSession:
     practice_mode: str = "sync"  # "sync" | "private"
 
 
+def annotator_access_payload(session: AnnotatorSession) -> dict[str, Any]:
+    client = session.websocket.client
+    return {
+        "annotator_id": session.annotator_id,
+        "user_id": session.user_id,
+        "ip": client.host if client else None,
+        "port": client.port if client else None,
+        "online": session.online,
+        "joined_at": session.joined_at,
+    }
+
+
 @dataclass
 class ActiveJob:
     job_id: str
@@ -469,19 +481,17 @@ def schedule_next_api_call(at: float | None = None) -> float:
     return _next_api_call_at
 
 
-def api_seconds_left() -> float | None:
+def api_seconds_left() -> int | None:
     if _next_api_call_at is None:
         return None
-    return max(0.0, _next_api_call_at - time.time())
+    return max(0, int(math.ceil(_next_api_call_at - time.time())))
 
 
 def api_schedule_payload() -> dict[str, Any]:
     return {
         "type": "api_schedule",
-        "next_call_at": _next_api_call_at,
         "seconds_left": api_seconds_left(),
         "interval_sec": API_CALL_INTERVAL_SEC,
-        "server_now": time.time(),
     }
 
 
@@ -562,7 +572,7 @@ class ConnectionManager:
     async def broadcast_api_schedule(self) -> None:
         msg = json.dumps(api_schedule_payload())
         dead: list[int] = []
-        for aid, session in self.annotators.items():
+        for aid, session in list(self.annotators.items()):
             try:
                 await session.websocket.send_text(msg)
             except Exception:
@@ -577,10 +587,8 @@ class ConnectionManager:
             {
                 "type": "api_call_started",
                 "video_id": video_id,
-                "next_call_at": _next_api_call_at,
                 "seconds_left": api_seconds_left(),
                 "interval_sec": API_CALL_INTERVAL_SEC,
-                "server_now": time.time(),
             }
         )
         dead: list[int] = []
@@ -1565,14 +1573,23 @@ async def _session_maintenance_loop() -> None:
         purge_expired_sessions()
 
 
+async def _api_schedule_broadcast_loop() -> None:
+    schedule_next_api_call()
+    await manager.broadcast_api_schedule()
+    while True:
+        await asyncio.sleep(1)
+        await manager.broadcast_api_schedule()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     del app
     validate_startup_config()
     test_task = asyncio.create_task(_test_scheduler_loop())
+    api_schedule_task = asyncio.create_task(_api_schedule_broadcast_loop())
     session_task = asyncio.create_task(_session_maintenance_loop())
     yield
-    for task in (test_task, session_task):
+    for task in (test_task, api_schedule_task, session_task):
         task.cancel()
         try:
             await task
@@ -1699,6 +1716,10 @@ async def health() -> dict[str, Any]:
         "online_annotators_connected": manager.online_annotator_count,
         "participants_connected": manager.participant_count,
         "test_annotators_connected": manager.test_annotator_count,
+        "annotator_access": [
+            annotator_access_payload(session)
+            for session in manager.snapshot_participants()
+        ],
         "next_api_call_at": _next_api_call_at,
         "next_api_seconds_left": api_seconds_left(),
         "api_call_interval_sec": API_CALL_INTERVAL_SEC,
