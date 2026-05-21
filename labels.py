@@ -16,9 +16,9 @@ LABEL_CONFIG: list[dict[str, str]] = [
     {"id": "shot", "key": "d", "display": "Shot"},
     {"id": "foul", "key": "f", "display": "Foul"},
     {"id": "goal", "key": "g", "display": "Goal"},
-    {"id": "interception", "key": "z", "display": "Interception"},
-    {"id": "substitution", "key": "x", "display": "Substitution"},
-    {"id": "clearance", "key": "c", "display": "Clearance"},
+    {"id": "interception", "key": "4", "display": "Interception"},
+    {"id": "substitution", "key": "2", "display": "Substitution"},
+    {"id": "clearance", "key": "3", "display": "Clearance"},
     {"id": "block", "key": "v", "display": "Block"},
     {"id": "ball_out_of_play", "key": "b", "display": "Ball out"},
 ]

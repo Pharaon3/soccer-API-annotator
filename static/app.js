@@ -1944,12 +1944,7 @@ function renderSessionEvents() {
   eventsList.innerHTML = jobEvents
     .slice()
     .filter((e) => e.participant_id === minePid)
-    .sort((a, b) => {
-      const aLabeled = Number(a.labeled_time_sec ?? a.time_sec);
-      const bLabeled = Number(b.labeled_time_sec ?? b.time_sec);
-      if (aLabeled !== bLabeled) return bLabeled - aLabeled;
-      return (b.id ?? 0) - (a.id ?? 0);
-    })
+    .sort((a, b) => (b.id ?? 0) - (a.id ?? 0))
     .map((e) => {
       const labelName = labelDisplayName(e.label);
       const mine = e.participant_id === myParticipantId;
@@ -1999,10 +1994,7 @@ function latestMyEvent() {
   const minePid = myParticipantId ?? 0;
   return jobEvents
     .filter((e) => e.participant_id === minePid)
-    .sort((a, b) => {
-      if (a.time_sec !== b.time_sec) return b.time_sec - a.time_sec;
-      return (b.id ?? 0) - (a.id ?? 0);
-    })[0];
+    .sort((a, b) => (b.id ?? 0) - (a.id ?? 0))[0];
 }
 
 function applyLocalAnnotation(labelId, time_sec, frame) {
@@ -2554,7 +2546,12 @@ async function switchToRole(selectedRole) {
 function handleAnnotatorKeydown(e) {
   if (!isAnnotatingRole()) return;
 
-  if (e.code === "Delete" || e.key === "Delete") {
+  if (
+    e.code === "Delete" ||
+    e.key === "Delete" ||
+    e.code === "Backspace" ||
+    e.key === "Backspace"
+  ) {
     if (isAnnotatorShortcutBlocked(e)) return;
     if (!canEditAnnotations()) return;
     const selected =
