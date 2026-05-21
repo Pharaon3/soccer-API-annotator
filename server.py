@@ -56,8 +56,14 @@ VIDEOS_DIR = DATA_DIR / "videos"
 ANNOTATIONS_DIR = DATA_DIR / "annotations"
 STATIC_DIR = ROOT / "static"
 
-for d in (VIDEOS_DIR, ANNOTATIONS_DIR, STATIC_DIR):
-    d.mkdir(parents=True, exist_ok=True)
+
+def ensure_data_dirs() -> None:
+    for directory in (VIDEOS_DIR, ANNOTATIONS_DIR):
+        directory.mkdir(parents=True, exist_ok=True)
+
+
+ensure_data_dirs()
+STATIC_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _env_float(name: str, default: float) -> float:
@@ -213,11 +219,22 @@ def _random_confidence() -> float:
     return round(random.uniform(0.6, 0.9), 2)
 
 
-def _api_prediction(frame: int, action: str) -> dict[str, Any]:
+def _confidence_value(value: Any = None) -> float:
+    if value is None:
+        return _random_confidence()
+    try:
+        return round(float(value), 2)
+    except (TypeError, ValueError):
+        return _random_confidence()
+
+
+def _api_prediction(
+    frame: int, action: str, confidence: Any = None
+) -> dict[str, Any]:
     return {
         "frame": int(frame),
         "action": action,
-        "confidence": _random_confidence(),
+        "confidence": _confidence_value(confidence),
     }
 
 
@@ -228,7 +245,7 @@ def events_to_predictions(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         frame = e.get("frame")
         if frame is None:
             frame = int(round(float(e["time_sec"]) * SEGMENT_FPS))
-        predictions.append(_api_prediction(int(frame), e["label"]))
+        predictions.append(_api_prediction(int(frame), e["label"], e.get("confidence")))
     return predictions
 
 
@@ -238,7 +255,12 @@ def annotations_api_payload(data: dict[str, Any]) -> dict[str, Any]:
         raw = data["predictions"]
         return {
             "predictions": [
-                _api_prediction(p["frame"], p["action"]) for p in raw
+                _api_prediction(
+                    p["frame"],
+                    p.get("action", p.get("label", "")),
+                    p.get("confidence"),
+                )
+                for p in raw
             ]
         }
     return {"predictions": events_to_predictions(data.get("events", []))}
@@ -261,11 +283,13 @@ def _serialize_stored_events(events: list[dict[str, Any]]) -> list[dict[str, Any
         frame = event.get("frame")
         if frame is None:
             frame = int(round(float(event["time_sec"]) * SEGMENT_FPS))
+        confidence = _confidence_value(event.get("confidence"))
         item: dict[str, Any] = {
             "time_sec": round(float(event["time_sec"]), 2),
             "label": event["label"],
             "participant_id": event.get("participant_id"),
             "frame": int(frame),
+            "confidence": confidence,
         }
         if event.get("user_id"):
             item["user_id"] = event["user_id"]
@@ -281,8 +305,9 @@ def persist_video_annotations(
     events: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Write predictions, detailed events, and labeler map to disk."""
-    predictions = events_to_predictions(events)
+    ensure_data_dirs()
     stored_events = _serialize_stored_events(events)
+    predictions = events_to_predictions(stored_events)
     labelers = _labelers_from_events(events)
     payload: dict[str, Any] = {
         "predictions": predictions,
@@ -315,6 +340,7 @@ def annotations_detail_payload(data: dict[str, Any]) -> dict[str, Any]:
                 "time_sec": round(float(p["frame"]) / SEGMENT_FPS, 2),
                 "label": p.get("action", p.get("label", "")),
                 "frame": int(p["frame"]),
+                "confidence": _confidence_value(p.get("confidence")),
                 "participant_id": p.get("participant_id"),
                 "user_id": p.get("user_id"),
             }
@@ -1203,6 +1229,7 @@ def _log_job_timing_summary(timing: JobVideoTiming) -> None:
 
 
 async def split_video_segment(src: Path, dest: Path, start: float, duration: float) -> None:
+    ensure_data_dirs()
     cmd = [
         "ffmpeg",
         "-y",
@@ -1681,6 +1708,7 @@ async def _api_schedule_broadcast_loop() -> None:
 async def lifespan(app: FastAPI):
     del app
     validate_startup_config()
+    ensure_data_dirs()
     test_task = asyncio.create_task(_test_scheduler_loop())
     api_schedule_task = asyncio.create_task(_api_schedule_broadcast_loop())
     session_task = asyncio.create_task(_session_maintenance_loop())
