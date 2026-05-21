@@ -1997,6 +1997,34 @@ function latestMyEvent() {
     .sort((a, b) => (b.id ?? 0) - (a.id ?? 0))[0];
 }
 
+function selectedOrLatestMyEvent() {
+  if (selectedEventId != null) {
+    const selected = jobEvents.find(
+      (x) => x.id === selectedEventId && x.participant_id === myParticipantId
+    );
+    if (selected) return selected;
+  }
+  return latestMyEvent();
+}
+
+function seekToFrame(frame) {
+  if (!video.src) return;
+  const { start, end } = playbackLocalBounds();
+  const wasPlaying = !video.paused;
+  video.currentTime = Math.min(end, Math.max(start, frameToTime(frame)));
+  if (wasPlaying) video.play().catch(() => {});
+  updateVideoHud();
+  updatePlayPauseButton();
+}
+
+function deleteEventAndSeekBack(event, frameOffset) {
+  if (!event) return false;
+  const frame = event.frame ?? timeToFrame(event.time_sec);
+  removeSessionEvent(event.id);
+  seekToFrame(Math.max(0, frame - frameOffset));
+  return true;
+}
+
 function applyLocalAnnotation(labelId, time_sec, frame) {
   const existing = findMyEventAtTimeAndLabel(time_sec, labelId);
   if (existing) {
@@ -2546,24 +2574,23 @@ async function switchToRole(selectedRole) {
 function handleAnnotatorKeydown(e) {
   if (!isAnnotatingRole()) return;
 
-  if (
-    e.code === "Delete" ||
-    e.key === "Delete" ||
-    e.code === "Backspace" ||
-    e.key === "Backspace"
-  ) {
+  if (e.code === "Delete" || e.key === "Delete") {
     if (isAnnotatorShortcutBlocked(e)) return;
     if (!canEditAnnotations()) return;
-    const selected =
-      selectedEventId == null
-        ? null
-        : jobEvents.find(
-            (x) => x.id === selectedEventId && x.participant_id === myParticipantId
-          );
-    const eventToDelete = selected || latestMyEvent();
+    const eventToDelete = selectedOrLatestMyEvent();
     if (!eventToDelete) return;
     e.preventDefault();
     removeSessionEvent(eventToDelete.id);
+    return;
+  }
+
+  if (e.code === "Backspace" || e.key === "Backspace") {
+    if (isAnnotatorShortcutBlocked(e)) return;
+    if (!canEditAnnotations()) return;
+    const eventToDelete = selectedOrLatestMyEvent();
+    if (!eventToDelete) return;
+    e.preventDefault();
+    deleteEventAndSeekBack(eventToDelete, 10);
     return;
   }
 
