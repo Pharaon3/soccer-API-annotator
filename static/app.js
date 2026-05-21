@@ -1,4 +1,11 @@
 const DEFAULT_FPS = 25;
+const DEFAULT_PLAYBACK_RATE = 1;
+const PLAYBACK_RATE_STEP = 0.1;
+const MIN_PLAYBACK_RATE = 0.1;
+const LABEL_FRAME_OFFSETS = {
+  pass: -5,
+  pass_received: -5,
+};
 const FIRST_PART_EXTRA_SEC = 3;
 const ARROW_HOLD_DELAY_MS = 60;
 const ARROW_HOLD_INTERVAL_MS = 28;
@@ -15,15 +22,26 @@ const IS_PRACTICE_PAGE = PAGE === "practice" || PAGE === "train";
 const IS_ANNOTATOR_PAGE = PAGE === "annotator";
 const IS_BOARD_PAGE = PAGE === "board" || PAGE === "review";
 const PENDING_ANNOTATE_KEY = "pendingAnnotateJob";
+const PLAYBACK_RATE_STORAGE_PREFIX = "playbackRate:";
 
 function getPositiveNumber(value) {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+function getPlaybackRate(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function formatPlaybackRate(rate) {
+  return Number(rate.toFixed(2)).toString();
+}
+
 let wsAuthed = false;
 let wsConnectResolve = null;
 let wsConnectingPromise = null;
+let currentUserId = null;
 
 const DEFAULT_LABEL_KEYBOARD_ROWS = [
   ["pass", "pass_received", "take_on", "recovery", "tackle"],
@@ -49,6 +67,9 @@ const annotatorRoster = document.getElementById("annotator-roster");
 const sessionInfo = document.getElementById("session-info");
 const jobInfo = document.getElementById("job-info");
 const reviewerVideo = document.getElementById("reviewer-video");
+const playbackSpeedInputs = Array.from(
+  document.querySelectorAll("[data-playback-speed-input]")
+);
 const videoList = document.getElementById("video-list");
 const reviewerEvents = document.getElementById("reviewer-events");
 const reviewerMeta = document.getElementById("reviewer-meta");
@@ -77,6 +98,7 @@ let boardFrameRafId = null;
 let boardTimelineTooltip = null;
 let apiNextWarned5Min = false;
 let apiNextWarned1Min = false;
+let playbackRate = DEFAULT_PLAYBACK_RATE;
 const btnPlayPause = document.getElementById("btn-play-pause");
 const videoTimeDisplay = document.getElementById("video-time-display");
 const videoFrameDisplay = document.getElementById("video-frame-display");
@@ -521,10 +543,12 @@ function replaceSelectedEventLabel(labelId) {
     return;
   }
   const oldLabel = ev.label;
-  const time_sec = ev.time_sec;
-  const frame = ev.frame ?? timeToFrame(time_sec);
+  const oldTimeSec = ev.time_sec;
+  const { time_sec, frame } = annotationPointForLabel(labelId, oldTimeSec);
   const pid = myParticipantId ?? 0;
   ev.label = labelId;
+  ev.time_sec = time_sec;
+  ev.frame = frame;
   ev.uid = `p${pid}-${roundTimeSec(time_sec)}-${labelId}`;
   sessionEvents = jobEvents.filter((x) => x.participant_id === myParticipantId);
   renderSessionEvents();
@@ -534,9 +558,9 @@ function replaceSelectedEventLabel(labelId) {
   send({
     type: "annotation_remove",
     job_id: currentJobId,
-    time_sec,
+    time_sec: oldTimeSec,
     label: oldLabel,
-    uid: `p${pid}-${roundTimeSec(time_sec)}-${oldLabel}`,
+    uid: `p${pid}-${roundTimeSec(oldTimeSec)}-${oldLabel}`,
   });
   send({
     type: "annotation",
@@ -791,7 +815,7 @@ function showKickAnnotatorModal(annotator) {
   pendingKickAnnotator = annotator;
   const name = formatAnnotatorName(annotator.user_id);
   if (kickAnnotatorMessage) {
-    kickAnnotatorMessage.textContent = `Really kick ${name}? They will become idle until they click "I am Online".`;
+    kickAnnotatorMessage.textContent = `${name} will stop receiving new tasks until they click "I am Online".`;
   }
   kickAnnotatorModal.classList.remove("hidden");
 }
@@ -850,6 +874,15 @@ function frameToTime(frame) {
   return frame / videoFps;
 }
 
+function annotationPointForLabel(labelId, timeSec) {
+  const frame = timeToFrame(timeSec);
+  const adjustedFrame = Math.max(0, frame + (LABEL_FRAME_OFFSETS[labelId] || 0));
+  return {
+    time_sec: frameToTime(adjustedFrame),
+    frame: adjustedFrame,
+  };
+}
+
 function formatTime(sec) {
   const m = Math.floor(sec / 60);
   const s = sec % 60;
@@ -885,6 +918,7 @@ function isAnnotatingRole() {
 function clearSession() {
   wsAuthed = false;
   wsConnectingPromise = null;
+  currentUserId = null;
   if (ws) {
     ws.close();
     ws = null;
@@ -905,6 +939,7 @@ async function checkAuthStatus() {
     const res = await fetch("/api/auth/status", { credentials: "same-origin" });
     if (!res.ok) return false;
     const data = await res.json();
+    currentUserId = data.user_id || null;
     return !!data.authenticated;
   } catch {
     return false;
@@ -1509,6 +1544,87 @@ function placeTimelineReadout(timelineEl, seekEl, readoutEl) {
   readoutEl.style.left = `${x}px`;
 }
 
+function getVideoPlayers() {
+  return [video, reviewerVideo].filter(Boolean);
+}
+
+function playbackRateStorageKey() {
+  return currentUserId ? `${PLAYBACK_RATE_STORAGE_PREFIX}${currentUserId}` : null;
+}
+
+function savePlaybackRate() {
+  const key = playbackRateStorageKey();
+  if (!key) return;
+  try {
+    localStorage.setItem(key, formatPlaybackRate(playbackRate));
+  } catch {
+    /* Browser storage may be unavailable in private or restricted modes. */
+  }
+}
+
+function loadPlaybackRate() {
+  const key = playbackRateStorageKey();
+  if (!key) return;
+  try {
+    const storedRate = getPlaybackRate(localStorage.getItem(key));
+    if (storedRate != null) {
+      playbackRate = Math.max(MIN_PLAYBACK_RATE, storedRate);
+    }
+  } catch {
+    /* Keep the default playback rate if storage is unavailable. */
+  }
+}
+
+function syncPlaybackSpeedInputs() {
+  const value = formatPlaybackRate(playbackRate);
+  playbackSpeedInputs.forEach((input) => {
+    input.value = value;
+  });
+}
+
+function applyPlaybackRate() {
+  getVideoPlayers().forEach((player) => {
+    player.playbackRate = playbackRate;
+  });
+  syncPlaybackSpeedInputs();
+}
+
+function setPlaybackRate(nextRate) {
+  const rate = getPlaybackRate(nextRate);
+  if (rate == null) {
+    syncPlaybackSpeedInputs();
+    return;
+  }
+  playbackRate = Math.max(MIN_PLAYBACK_RATE, rate);
+  applyPlaybackRate();
+  savePlaybackRate();
+}
+
+function adjustPlaybackRate(delta) {
+  setPlaybackRate(playbackRate + delta);
+}
+
+function handlePlaybackSpeedKeydown(e) {
+  if (e.code !== "ArrowUp" && e.code !== "ArrowDown") return;
+  if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+  if (!getVideoPlayers().length) return;
+  e.preventDefault();
+  adjustPlaybackRate(e.code === "ArrowUp" ? PLAYBACK_RATE_STEP : -PLAYBACK_RATE_STEP);
+}
+
+function bindPlaybackSpeedControls() {
+  if (!playbackSpeedInputs.length && !getVideoPlayers().length) return;
+  playbackSpeedInputs.forEach((input) => {
+    input.addEventListener("change", () => setPlaybackRate(input.value));
+    input.addEventListener("blur", () => syncPlaybackSpeedInputs());
+  });
+  getVideoPlayers().forEach((player) => {
+    player.addEventListener("loadedmetadata", applyPlaybackRate);
+  });
+  window.addEventListener("keydown", handlePlaybackSpeedKeydown, true);
+  applyPlaybackRate();
+}
+
 function updateVideoHud() {
   if (!video.src) {
     updateAnnotatorInteractionState();
@@ -1911,9 +2027,9 @@ function annotate(labelId) {
     replaceSelectedEventLabel(labelId);
     return;
   }
-  const time_sec = globalTimeFromVideo();
-  if (!isInAnnotationRange(time_sec)) return;
-  const frame = timeToFrame(time_sec);
+  const currentTimeSec = globalTimeFromVideo();
+  if (!isInAnnotationRange(currentTimeSec)) return;
+  const { time_sec, frame } = annotationPointForLabel(labelId, currentTimeSec);
   if (isPrivatePractice()) {
     applyLocalAnnotation(labelId, time_sec, frame);
     return;
@@ -2067,6 +2183,7 @@ async function startAnnotatorJob(data) {
 
   try {
     await waitForVideoMetadata(url);
+    applyPlaybackRate();
     const offset = jobPlaybackStart || 0;
     await waitForVideoAtOffset(offset);
     updateTimelineSeekRange();
@@ -2460,6 +2577,7 @@ function handleAnnotatorKeydown(e) {
   }
 
   if (isAnnotatorShortcutBlocked(e)) return;
+  if (e.defaultPrevented) return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
 
   const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
@@ -2530,6 +2648,8 @@ async function bootApp() {
     hideAppBoot();
     return;
   }
+  loadPlaybackRate();
+  applyPlaybackRate();
 
   try {
     await loadLabelConfig();
@@ -2610,6 +2730,7 @@ function bindReviewHandlers() {
   bindBoardPlayerHandlers();
 }
 
+bindPlaybackSpeedControls();
 bootApp();
 
 btnPlayPause?.addEventListener("click", togglePlayPause);
@@ -2849,6 +2970,14 @@ function toggleBoardPlayPause() {
   updateBoardPlayPauseButton();
 }
 
+function handleBoardPlayerKeydown(e) {
+  if (e.code !== "Space") return;
+  if (e.isComposing || isTextEntryElement(document.activeElement)) return;
+  if (!reviewerVideo?.src) return;
+  e.preventDefault();
+  toggleBoardPlayPause();
+}
+
 function bindBoardPlayerHandlers() {
   if (!hasBoardTimeline()) return;
 
@@ -2915,6 +3044,7 @@ function bindBoardPlayerHandlers() {
   });
 
   bindTimelineMarkerTooltips(boardVideoTimeline);
+  window.addEventListener("keydown", handleBoardPlayerKeydown, true);
 }
 
 function renderVideoList(videos) {
@@ -3082,6 +3212,7 @@ async function loadReviewerVideo(item, btn) {
     return;
   }
   reviewerVideo.src = playbackUrl;
+  applyPlaybackRate();
   const labelerLine = formatLabelerList(item.labeler_names);
   reviewerMeta.innerHTML = `<div><strong>${vid}</strong></div>${item.video_url ? `<div class="reviewer-meta-url">${item.video_url}</div>` : ""}<div class="reviewer-meta-labelers">Labeled by: ${labelerLine}</div></div>`;
   try {

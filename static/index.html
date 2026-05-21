@@ -36,6 +36,10 @@
         <main class="video-wrap">
           <div class="video-aspect">
             <video id="annotator-video" playsinline preload="auto"></video>
+            <label class="playback-speed-control">
+              <span>Speed</span>
+              <input type="number" class="playback-speed-input" data-playback-speed-input min="0.1" step="0.1" value="1" inputmode="decimal" aria-label="Video playback speed" />
+            </label>
             <div id="api-countdown" class="api-countdown video-countdown hidden" aria-live="polite">
               <span id="countdown-value" class="countdown-value">—</span>
               <span class="countdown-unit">s</span>
@@ -97,7 +101,13 @@
         <ul id="video-list" class="video-list-grouped"></ul>
       </aside>
       <section class="reviewer-main">
-        <video id="reviewer-video" controls playsinline></video>
+        <div class="board-video-wrap">
+          <video id="reviewer-video" controls playsinline></video>
+          <label class="playback-speed-control">
+            <span>Speed</span>
+            <input type="number" class="playback-speed-input" data-playback-speed-input min="0.1" step="0.1" value="1" inputmode="decimal" aria-label="Video playback speed" />
+          </label>
+        </div>
         <div id="reviewer-meta" class="reviewer-meta"></div>
       </section>
       <aside class="reviewer-events-sidebar">

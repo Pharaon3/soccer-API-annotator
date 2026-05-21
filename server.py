@@ -2110,12 +2110,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 job_id = data.get("job_id")
                 label = data.get("label")
                 time_sec = data.get("time_sec")
+                frame = data.get("frame")
                 if label not in LABEL_IDS or job_id not in active_test_jobs:
                     continue
                 pid = participant_session.annotator_id if participant_session else 0
                 event = {
                     "time_sec": round(float(time_sec), 2),
                     "label": label,
+                    "frame": int(frame) if frame is not None else None,
                     "participant_id": pid,
                     "user_id": participant_session.user_id if participant_session else None,
                     "uid": f"p{pid}-{round(float(time_sec), 2)}-{label}",
@@ -2132,12 +2134,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 job_id = data.get("job_id")
                 label = data.get("label")
                 time_sec = data.get("time_sec")
+                frame = data.get("frame")
                 if label not in LABEL_IDS or job_id not in job_events:
                     continue
                 pid = participant_session.annotator_id if participant_session else 0
                 event = {
                     "time_sec": round(float(time_sec), 2),
                     "label": label,
+                    "frame": int(frame) if frame is not None else None,
                     "participant_id": pid,
                     "user_id": participant_session.user_id if participant_session else None,
                     "uid": f"p{pid}-{round(float(time_sec), 2)}-{label}",

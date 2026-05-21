@@ -22,6 +22,10 @@
         <main class="video-wrap">
           <div class="video-aspect">
             <video id="annotator-video" playsinline preload="auto"></video>
+            <label class="playback-speed-control">
+              <span>Speed</span>
+              <input type="number" class="playback-speed-input" data-playback-speed-input min="0.1" step="0.1" value="1" inputmode="decimal" aria-label="Video playback speed" />
+            </label>
             <div id="api-countdown" class="api-countdown video-countdown hidden" aria-live="polite">
               <span id="countdown-value" class="countdown-value">—</span>
               <span class="countdown-unit">s</span>
@@ -81,13 +85,13 @@
     </div>
   </div>
 
-  <div id="kick-annotator-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="kick-annotator-title">
-    <div class="modal-card">
-      <h2 id="kick-annotator-title">Make annotator idle?</h2>
-      <p id="kick-annotator-message">Really kick this annotator?</p>
-      <div class="role-buttons">
-        <button type="button" id="btn-kick-annotator-yes">Yes</button>
-        <button type="button" id="btn-kick-annotator-cancel" class="modal-cancel">Cancel</button>
+  <div id="kick-annotator-modal" class="modal kick-modal hidden" role="dialog" aria-modal="true" aria-labelledby="kick-annotator-title">
+    <div class="modal-card kick-modal-card">
+      <h2 id="kick-annotator-title">Make Annotator Idle?</h2>
+      <p id="kick-annotator-message" class="kick-modal-message">This annotator will stop receiving new tasks until they come back online.</p>
+      <div class="kick-modal-actions">
+        <button type="button" id="btn-kick-annotator-cancel" class="kick-modal-btn kick-modal-btn-secondary">Cancel</button>
+        <button type="button" id="btn-kick-annotator-yes" class="kick-modal-btn kick-modal-btn-danger">Make Idle</button>
       </div>
     </div>
   </div>
