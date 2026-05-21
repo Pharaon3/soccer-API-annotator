@@ -744,6 +744,12 @@ function normalizeAnnotatorStatus(status) {
   return "offline";
 }
 
+function formatAnnotatorName(name) {
+  const text = String(name || "").trim();
+  if (!text) return "Annotator";
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 function renderAnnotatorRoster(annotators = []) {
   if (!annotatorRoster) return;
   annotatorRoster.innerHTML = "";
@@ -758,13 +764,11 @@ function renderAnnotatorRoster(annotators = []) {
 
     const name = document.createElement("span");
     name.className = "annotator-roster-name";
-    name.textContent = annotator.user_id || `Annotator ${annotator.annotator_id ?? ""}`.trim();
+    name.textContent = formatAnnotatorName(
+      annotator.user_id || `Annotator ${annotator.annotator_id ?? ""}`
+    );
 
-    const statusLabel = document.createElement("span");
-    statusLabel.className = "annotator-roster-status";
-    statusLabel.textContent = status;
-
-    item.append(dot, name, statusLabel);
+    item.append(dot, name);
     annotatorRoster.appendChild(item);
   });
 }
