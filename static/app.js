@@ -758,17 +758,13 @@ function renderAnnotatorRoster(annotators = []) {
     const item = document.createElement("li");
     item.className = `annotator-roster-item ${status}`;
 
-    const dot = document.createElement("span");
-    dot.className = "annotator-roster-dot";
-    dot.setAttribute("aria-hidden", "true");
-
     const name = document.createElement("span");
     name.className = "annotator-roster-name";
     name.textContent = formatAnnotatorName(
       annotator.user_id || `Annotator ${annotator.annotator_id ?? ""}`
     );
 
-    item.append(dot, name);
+    item.append(name);
     annotatorRoster.appendChild(item);
   });
 }

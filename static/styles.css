@@ -864,7 +864,7 @@ body.page-home {
 
 .annotator-roster {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: row;
   gap: 0.3rem;
   margin: 0;
   padding: 0;
