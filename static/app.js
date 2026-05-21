@@ -17,6 +17,11 @@ const IS_BOARD_PAGE = PAGE === "board" || PAGE === "review";
 const PENDING_ANNOTATE_KEY = "pendingAnnotateJob";
 const API_NEXT_DEADLINE_KEY = "apiNextCallAt";
 
+function getPositiveNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 let wsAuthed = false;
 let wsConnectResolve = null;
 let wsConnectingPromise = null;
@@ -1176,11 +1181,15 @@ function redirectToAnnotatorForApiJob(data) {
 
 function normalizeApiSecondsLeft(data) {
   const raw = data.seconds_left ?? data.duration_sec;
-  const n = Number(raw);
-  if (Number.isFinite(n) && n > 0 && n <= 600) {
+  const n = getPositiveNumber(raw);
+  if (n !== null && n <= 600) {
     return Math.ceil(n);
   }
   return API_RESPONSE_FALLBACK_SEC;
+}
+
+function isExpiredAnnotateJob(data) {
+  return data && "seconds_left" in data && getPositiveNumber(data.seconds_left) === null;
 }
 
 function beginJobCountdown(data) {
@@ -2014,6 +2023,16 @@ async function startAnnotatorJob(data) {
 }
 
 function handleAnnotateStart(data) {
+  if (isExpiredAnnotateJob(data)) {
+    currentJobId = null;
+    loadedVideoJobId = null;
+    pendingApiVideoId = null;
+    pendingAnnotateJob = null;
+    stopApiCountdown(true);
+    hideVideoReady();
+    showApiNextIdle();
+    return;
+  }
   notifyNewAnnotationJob();
   clearConnectionStatus();
   goToAnnotatorForJob(data);
