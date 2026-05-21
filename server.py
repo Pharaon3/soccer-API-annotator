@@ -2111,6 +2111,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 label = data.get("label")
                 time_sec = data.get("time_sec")
                 frame = data.get("frame")
+                labeled_time_sec = data.get("labeled_time_sec")
                 if label not in LABEL_IDS or job_id not in active_test_jobs:
                     continue
                 pid = participant_session.annotator_id if participant_session else 0
@@ -2118,6 +2119,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     "time_sec": round(float(time_sec), 2),
                     "label": label,
                     "frame": int(frame) if frame is not None else None,
+                    "labeled_time_sec": round(float(labeled_time_sec), 2)
+                    if labeled_time_sec is not None
+                    else round(float(time_sec), 2),
                     "participant_id": pid,
                     "user_id": participant_session.user_id if participant_session else None,
                     "uid": f"p{pid}-{round(float(time_sec), 2)}-{label}",
@@ -2135,6 +2139,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 label = data.get("label")
                 time_sec = data.get("time_sec")
                 frame = data.get("frame")
+                labeled_time_sec = data.get("labeled_time_sec")
                 if label not in LABEL_IDS or job_id not in job_events:
                     continue
                 pid = participant_session.annotator_id if participant_session else 0
@@ -2142,6 +2147,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     "time_sec": round(float(time_sec), 2),
                     "label": label,
                     "frame": int(frame) if frame is not None else None,
+                    "labeled_time_sec": round(float(labeled_time_sec), 2)
+                    if labeled_time_sec is not None
+                    else round(float(time_sec), 2),
                     "participant_id": pid,
                     "user_id": participant_session.user_id if participant_session else None,
                     "uid": f"p{pid}-{round(float(time_sec), 2)}-{label}",

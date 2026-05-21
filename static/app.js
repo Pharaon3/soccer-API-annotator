@@ -2,10 +2,6 @@ const DEFAULT_FPS = 25;
 const DEFAULT_PLAYBACK_RATE = 1;
 const PLAYBACK_RATE_STEP = 0.1;
 const MIN_PLAYBACK_RATE = 0.1;
-const LABEL_FRAME_OFFSETS = {
-  pass: -5,
-  pass_received: -5,
-};
 const FIRST_PART_EXTRA_SEC = 3;
 const ARROW_HOLD_DELAY_MS = 60;
 const ARROW_HOLD_INTERVAL_MS = 28;
@@ -52,6 +48,7 @@ const DEFAULT_LABEL_KEYBOARD_ROWS = [
 let LABELS = [];
 let labelKeyboardRows = DEFAULT_LABEL_KEYBOARD_ROWS;
 let keyToLabel = {};
+let labelFrameOffsets = {};
 
 const roleScreen = document.getElementById("role-screen");
 const annotatorScreen = document.getElementById("annotator-screen");
@@ -211,6 +208,7 @@ async function loadLabelConfig() {
   LABELS = data.labels || [];
   labelKeyboardRows = data.keyboard_rows || DEFAULT_LABEL_KEYBOARD_ROWS;
   keyToLabel = Object.fromEntries(LABELS.map((l) => [l.key, l.id]));
+  labelFrameOffsets = data.frame_offsets || {};
 }
 
 function participantColor(participantId) {
@@ -544,7 +542,8 @@ function replaceSelectedEventLabel(labelId) {
   }
   const oldLabel = ev.label;
   const oldTimeSec = ev.time_sec;
-  const { time_sec, frame } = annotationPointForLabel(labelId, oldTimeSec);
+  const time_sec = ev.time_sec;
+  const frame = ev.frame ?? timeToFrame(time_sec);
   const pid = myParticipantId ?? 0;
   ev.label = labelId;
   ev.time_sec = time_sec;
@@ -568,6 +567,7 @@ function replaceSelectedEventLabel(labelId) {
     label: labelId,
     time_sec,
     frame,
+    labeled_time_sec: ev.labeled_time_sec ?? time_sec,
   });
 }
 
@@ -876,7 +876,7 @@ function frameToTime(frame) {
 
 function annotationPointForLabel(labelId, timeSec) {
   const frame = timeToFrame(timeSec);
-  const adjustedFrame = Math.max(0, frame + (LABEL_FRAME_OFFSETS[labelId] || 0));
+  const adjustedFrame = Math.max(0, frame - (Number(labelFrameOffsets[labelId]) || 0));
   return {
     time_sec: frameToTime(adjustedFrame),
     frame: adjustedFrame,
@@ -1768,6 +1768,7 @@ function handleJobEvent(data) {
       id: ++nextEventId,
       time_sec: e.time_sec,
       frame: e.frame ?? timeToFrame(e.time_sec),
+    labeled_time_sec: e.labeled_time_sec ?? e.time_sec,
       label: e.label,
       participant_id: e.participant_id,
       uid,
@@ -1943,7 +1944,12 @@ function renderSessionEvents() {
   eventsList.innerHTML = jobEvents
     .slice()
     .filter((e) => e.participant_id === minePid)
-    .sort((a, b) => a.time_sec - b.time_sec)
+    .sort((a, b) => {
+      const aLabeled = Number(a.labeled_time_sec ?? a.time_sec);
+      const bLabeled = Number(b.labeled_time_sec ?? b.time_sec);
+      if (aLabeled !== bLabeled) return bLabeled - aLabeled;
+      return (b.id ?? 0) - (a.id ?? 0);
+    })
     .map((e) => {
       const labelName = labelDisplayName(e.label);
       const mine = e.participant_id === myParticipantId;
@@ -2011,6 +2017,7 @@ function applyLocalAnnotation(labelId, time_sec, frame) {
     id: ++nextEventId,
     time_sec,
     frame,
+    labeled_time_sec: globalTimeFromVideo(),
     label: labelId,
     participant_id: pid,
     uid,
@@ -2046,6 +2053,7 @@ function annotate(labelId) {
     label: labelId,
     time_sec,
     frame,
+    labeled_time_sec: currentTimeSec,
   });
 }
 
@@ -2296,7 +2304,7 @@ function updatePracticeModeUI() {
   if (practiceEventsHeading) {
     practiceEventsHeading.textContent = sync
       ? "Events this session"
-      : "Your annotations (local only)";
+      : "Your annotations";
   }
 }
 
