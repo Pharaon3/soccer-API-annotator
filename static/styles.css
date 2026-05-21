@@ -2091,7 +2091,8 @@ body.annotations-locked .label-btn {
 }
 
 .video-list-meta,
-.video-list-labelers {
+.video-list-labelers,
+.video-list-generated {
   display: block;
   font-size: 0.74rem;
   line-height: 1.35;
@@ -2101,6 +2102,14 @@ body.annotations-locked .label-btn {
 .video-list-labelers {
   margin-top: 0.15rem;
   color: #cbd5e1;
+}
+
+.video-list-generated,
+.reviewer-meta-generated {
+  margin-top: 0.2rem;
+  color: #fbbf24;
+  font-weight: 800;
+  text-shadow: 0 0 10px rgba(251, 191, 36, 0.42);
 }
 
 .reviewer-meta-url {
