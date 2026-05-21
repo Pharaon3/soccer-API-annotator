@@ -630,16 +630,23 @@ class ConnectionManager:
                 "interval_sec": API_CALL_INTERVAL_SEC,
             }
         )
+        delivered: set[WebSocket] = set()
         dead: list[int] = []
-        for aid, session in list(self.annotators.items()):
-            if not session.online:
-                continue
+        for aid, session in list(self.participants.items()):
             try:
                 await session.websocket.send_text(msg)
+                delivered.add(session.websocket)
             except Exception:
                 dead.append(aid)
         for aid in dead:
             await self._drop_participant(aid)
+        dead_connections: set[WebSocket] = set()
+        for ws in self.connections - delivered:
+            try:
+                await ws.send_text(msg)
+            except Exception:
+                dead_connections.add(ws)
+        self.connections -= dead_connections
 
     async def broadcast_api_call_started(self, video_id: str) -> None:
         """Alias used at API entry; keeps online annotators in sync for job dispatch."""
@@ -1165,6 +1172,16 @@ def segment_video_path(video_id: str, rank: int) -> Path:
     return VIDEOS_DIR / f"{segment_video_id(video_id, rank)}.mp4"
 
 
+def cleanup_segment_videos(video_id: str) -> None:
+    for segment_file in VIDEOS_DIR.glob(f"{video_id}_part_*.mp4"):
+        try:
+            segment_file.unlink()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            logger.exception("Failed to delete segment video %s", segment_file)
+
+
 def _elapsed_since(started_at: float) -> float:
     return time.time() - started_at
 
@@ -1301,6 +1318,7 @@ async def generate_random_annotation_fallback(video_url: str) -> dict[str, Any]:
         events=random_generated_events(),
     )
     await manager.notify_reviewers_video_saved(video_id)
+    cleanup_segment_videos(video_id)
     return {"predictions": payload["predictions"]}
 
 
@@ -1504,6 +1522,7 @@ async def _run_annotate_job_body(
         events=events,
     )
     await manager.notify_reviewers_video_saved(video_id)
+    cleanup_segment_videos(video_id)
     return {"predictions": payload["predictions"]}
 
 
