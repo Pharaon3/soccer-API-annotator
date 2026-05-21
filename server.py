@@ -31,6 +31,7 @@ from auth import (
     auth_cookie_params,
     create_session,
     get_session_user_id,
+    list_static_user_ids,
     purge_expired_sessions,
     revoke_session,
     static_users_configured,
@@ -364,6 +365,16 @@ def annotator_access_payload(session: AnnotatorSession) -> dict[str, Any]:
     }
 
 
+def annotator_status_payload(session: AnnotatorSession | None) -> dict[str, Any]:
+    if session is None:
+        return {"status": "offline"}
+    return {
+        "status": "online" if session.online else "idle",
+        "annotator_id": session.annotator_id,
+        "joined_at": session.joined_at,
+    }
+
+
 @dataclass
 class ActiveJob:
     job_id: str
@@ -546,6 +557,7 @@ class ConnectionManager:
         session = self._new_participant(ws, user_id=user_id)
         self.annotators[session.annotator_id] = session
         await self._broadcast_annotator_count()
+        await self.broadcast_annotator_roster()
         return session
 
     async def register_test_annotator(
@@ -555,6 +567,7 @@ class ConnectionManager:
         self.test_annotators[session.annotator_id] = session
         self.annotators[session.annotator_id] = session
         await self._broadcast_annotator_count()
+        await self.broadcast_annotator_roster()
         return session
 
     async def register_reviewer(
@@ -564,6 +577,7 @@ class ConnectionManager:
         self.reviewers.add(ws)
         self.annotators[session.annotator_id] = session
         await self._broadcast_annotator_count()
+        await self.broadcast_annotator_roster()
         return session
 
     async def send_api_schedule(self, ws: WebSocket) -> None:
@@ -655,6 +669,23 @@ class ConnectionManager:
             del self.participants[aid]
         if removed:
             await self._broadcast_annotator_count()
+            await self.broadcast_annotator_roster()
+
+    async def disconnect_user(self, user_id: str) -> None:
+        sessions = [
+            session
+            for session in self.snapshot_participants()
+            if session.user_id == user_id
+        ]
+        for session in sessions:
+            try:
+                await session.websocket.close(code=4001, reason="Logged in elsewhere")
+            except Exception:
+                pass
+            await self._drop_participant(session.annotator_id)
+        if sessions:
+            await self._broadcast_annotator_count()
+            await self.broadcast_annotator_roster()
 
     async def set_session_online(self, session: AnnotatorSession, online: bool) -> None:
         session.online = online
@@ -665,6 +696,7 @@ class ConnectionManager:
         except Exception:
             pass
         await self._broadcast_annotator_count()
+        await self.broadcast_annotator_roster()
 
     async def _broadcast_annotator_count(self) -> None:
         msg = json.dumps(
@@ -676,6 +708,39 @@ class ConnectionManager:
         )
         dead: list[int] = []
         for aid, session in self.participants.items():
+            try:
+                await session.websocket.send_text(msg)
+            except Exception:
+                dead.append(aid)
+        for aid in dead:
+            await self._drop_participant(aid)
+        if dead:
+            await self.broadcast_annotator_roster()
+
+    def annotator_roster_payload(self) -> dict[str, Any]:
+        sessions_by_user = {
+            session.user_id: session
+            for session in self.snapshot_participants()
+            if session.user_id
+        }
+        return {
+            "type": "annotator_roster",
+            "annotators": [
+                {
+                    "user_id": user_id,
+                    **annotator_status_payload(sessions_by_user.get(user_id)),
+                }
+                for user_id in list_static_user_ids()
+            ],
+        }
+
+    async def send_annotator_roster(self, ws: WebSocket) -> None:
+        await ws.send_text(json.dumps(self.annotator_roster_payload()))
+
+    async def broadcast_annotator_roster(self) -> None:
+        msg = json.dumps(self.annotator_roster_payload())
+        dead: list[int] = []
+        for aid, session in list(self.participants.items()):
             try:
                 await session.websocket.send_text(msg)
             except Exception:
@@ -1739,7 +1804,8 @@ async def auth_login(body: LoginRequest) -> JSONResponse:
     if not verify_user_credentials(body.user_id, body.password):
         print(f"[login] failed invalid credentials user_id={user_id!r}")
         raise HTTPException(status_code=401, detail="Invalid user ID or password")
-    token = create_session(body.user_id)
+    await manager.disconnect_user(user_id)
+    token = create_session(user_id)
     print(f"[login] success user_id={user_id!r}")
     response = JSONResponse(content={"ok": True, "user_id": user_id})
     response.set_cookie(
@@ -1859,6 +1925,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             }
                         )
                     )
+                    await manager.send_annotator_roster(websocket)
                     if active_jobs:
                         await manager.send_active_annotate_job(participant_session)
                     else:
@@ -1884,6 +1951,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             }
                         )
                     )
+                    await manager.send_annotator_roster(websocket)
                 elif role == "test":
                     participant_session = await manager.register_test_annotator(
                         websocket, user_id=session_user_id
@@ -1904,6 +1972,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                             }
                         )
                     )
+                    await manager.send_annotator_roster(websocket)
                     await manager.send_test_schedule(websocket)
                 continue
 

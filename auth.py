@@ -79,8 +79,12 @@ def verify_user_credentials(user_id: str, password: str) -> bool:
 
 def create_session(user_id: str) -> str:
     purge_expired_sessions()
+    normalized_user_id = user_id.strip()
+    for existing_token, (_, existing_user_id) in list(_sessions.items()):
+        if existing_user_id == normalized_user_id:
+            _sessions.pop(existing_token, None)
     token = secrets.token_urlsafe(32)
-    _sessions[token] = (time.time() + SESSION_TTL_SEC, user_id.strip())
+    _sessions[token] = (time.time() + SESSION_TTL_SEC, normalized_user_id)
     return token
 
 

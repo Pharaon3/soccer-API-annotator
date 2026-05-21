@@ -45,6 +45,7 @@ const labelButtons = document.getElementById("label-buttons");
 const video = document.getElementById("annotator-video");
 const overlay = document.getElementById("event-overlay");
 const eventsList = document.getElementById("events-list");
+const annotatorRoster = document.getElementById("annotator-roster");
 const sessionInfo = document.getElementById("session-info");
 const jobInfo = document.getElementById("job-info");
 const reviewerVideo = document.getElementById("reviewer-video");
@@ -736,6 +737,38 @@ function handlePresenceStatus(data) {
   setPresenceOnline(data.online === true, { notifyServer: false });
 }
 
+function normalizeAnnotatorStatus(status) {
+  if (status === "online" || status === "idle" || status === "offline") {
+    return status;
+  }
+  return "offline";
+}
+
+function renderAnnotatorRoster(annotators = []) {
+  if (!annotatorRoster) return;
+  annotatorRoster.innerHTML = "";
+  annotators.forEach((annotator) => {
+    const status = normalizeAnnotatorStatus(annotator.status);
+    const item = document.createElement("li");
+    item.className = `annotator-roster-item ${status}`;
+
+    const dot = document.createElement("span");
+    dot.className = "annotator-roster-dot";
+    dot.setAttribute("aria-hidden", "true");
+
+    const name = document.createElement("span");
+    name.className = "annotator-roster-name";
+    name.textContent = annotator.user_id || `Annotator ${annotator.annotator_id ?? ""}`.trim();
+
+    const statusLabel = document.createElement("span");
+    statusLabel.className = "annotator-roster-status";
+    statusLabel.textContent = status;
+
+    item.append(dot, name, statusLabel);
+    annotatorRoster.appendChild(item);
+  });
+}
+
 function wsUrl() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${location.host}/ws`;
@@ -1365,7 +1398,7 @@ function connectWebSocket() {
     ws.onclose = (ev) => {
       wsAuthed = false;
       wsConnectingPromise = null;
-      if (ev.code === 1008) {
+      if (ev.code === 1008 || ev.code === 4001) {
         redirectToLogin();
         return;
       }
@@ -2232,6 +2265,9 @@ function handleMessage(data) {
       break;
     case "presence_status":
       handlePresenceStatus(data);
+      break;
+    case "annotator_roster":
+      renderAnnotatorRoster(data.annotators);
       break;
     case "annotator_count":
       if (sessionInfo && isAnnotatingRole()) {
