@@ -78,6 +78,7 @@
           <div class="practice-mode-bar" role="group" aria-label="Practice mode">
             <button type="button" id="btn-practice-sync" class="practice-mode-btn active" aria-pressed="true">Sync practice</button>
             <button type="button" id="btn-practice-private" class="practice-mode-btn" aria-pressed="false">Private practice</button>
+            <button type="button" id="btn-practice-external" class="practice-mode-btn" aria-pressed="false">External video</button>
           </div>
           <p id="practice-mode-hint" class="practice-mode-hint">Scheduled rounds with other online practice users.</p>
           <div class="sidebar-toolbar">
@@ -92,6 +93,11 @@
               <span class="countdown-hint">next round</span>
             </div>
           </div>
+          <form id="external-video-form" class="external-video-form hidden">
+            <label for="external-video-url" class="external-video-label">Video URL</label>
+            <input type="url" id="external-video-url" class="external-video-input" placeholder="https://example.com/video.mp4" autocomplete="off" />
+            <button type="submit" id="btn-external-video-start" class="external-video-submit">Start Practice</button>
+          </form>
           <p id="connection-status" class="connection-status hidden" role="alert"></p>
           <h2 id="practice-events-heading">Events this session</h2>
           <ul id="events-list"></ul>

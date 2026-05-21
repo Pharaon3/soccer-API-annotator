@@ -120,9 +120,12 @@ const btnKickAnnotatorYes = document.getElementById("btn-kick-annotator-yes");
 const btnKickAnnotatorCancel = document.getElementById("btn-kick-annotator-cancel");
 const btnPracticeSync = document.getElementById("btn-practice-sync");
 const btnPracticePrivate = document.getElementById("btn-practice-private");
+const btnPracticeExternal = document.getElementById("btn-practice-external");
 const practiceModeHint = document.getElementById("practice-mode-hint");
 const practiceVideoPanel = document.getElementById("practice-video-panel");
 const practiceEventsHeading = document.getElementById("practice-events-heading");
+const externalVideoForm = document.getElementById("external-video-form");
+const externalVideoUrl = document.getElementById("external-video-url");
 
 let presenceOnline = true;
 let presenceIdleTimer = null;
@@ -229,6 +232,14 @@ function videoListOnSelect() {
 
 function isPrivatePractice() {
   return IS_PRACTICE_PAGE && practiceMode === "private";
+}
+
+function isExternalPractice() {
+  return IS_PRACTICE_PAGE && practiceMode === "external";
+}
+
+function isLocalPractice() {
+  return isPrivatePractice() || isExternalPractice();
 }
 
 function isSyncPractice() {
@@ -553,7 +564,7 @@ function replaceSelectedEventLabel(labelId) {
   renderSessionEvents();
   renderTimelineMarkers();
   showOverlay(labelId, frame);
-  if (isPrivatePractice()) return;
+  if (isLocalPractice()) return;
   send({
     type: "annotation_remove",
     job_id: currentJobId,
@@ -1979,7 +1990,7 @@ function removeSessionEvent(eventId) {
   sessionEvents = jobEvents.filter((x) => x.participant_id === myParticipantId);
   renderSessionEvents();
   renderTimelineMarkers();
-  if (currentJobId && !isPrivatePractice()) {
+  if (currentJobId && !isLocalPractice()) {
     send({
       type: "annotation_remove",
       job_id: currentJobId,
@@ -2057,7 +2068,7 @@ function annotate(labelId) {
   const currentTimeSec = globalTimeFromVideo();
   if (!isInAnnotationRange(currentTimeSec)) return;
   const { time_sec, frame } = annotationPointForLabel(labelId, currentTimeSec);
-  if (isPrivatePractice()) {
+  if (isLocalPractice()) {
     applyLocalAnnotation(labelId, time_sec, frame);
     return;
   }
@@ -2235,6 +2246,62 @@ async function startAnnotatorJob(data) {
   }
 }
 
+async function startDirectPracticeJob(data) {
+  const url = data.video_file || data.source_url;
+  if (!url) return;
+
+  stopVideoPoll();
+  clearPostDeadlineCleanupTimer();
+  pendingApiVideoId = null;
+  hideAnnotatorIdleCountdown();
+  currentJobId = data.job_id;
+  loadedVideoJobId = data.job_id;
+  setAnnotationsLocked(false);
+  resetPresenceIdleTimer();
+  jobEvents = [];
+  sessionEvents = [];
+  selectedEventId = null;
+  nextEventId = 0;
+  applyJobTiming(data);
+  myParticipantId = myParticipantId ?? 1;
+  renderSessionEvents();
+  renderTimelineMarkers();
+
+  if (jobInfo) {
+    jobInfo.textContent = `${isExternalPractice() ? "External video" : "Private practice"} · loading ${data.video_id || "video"}…`;
+  }
+
+  showVideoReady();
+  video.pause();
+  try {
+    await waitForVideoMetadata(url);
+    applyPlaybackRate();
+    const duration =
+      video.duration && Number.isFinite(video.duration) ? video.duration : 30;
+    data.segment_window_sec = duration;
+    data.segment_end_sec = duration;
+    data.clip_duration_sec = duration;
+    data.segment_core_end_sec = duration;
+    applyJobTiming(data);
+    await waitForVideoAtOffset(0);
+    updateTimelineSeekRange();
+    updateTimelineZones();
+    estimateFps();
+    video.currentTime = 0;
+    await video.play().catch(() => {});
+    startVideoHudLoop();
+    updateVideoHud();
+    renderTimelineMarkers();
+    if (jobInfo) {
+      jobInfo.textContent = `${isExternalPractice() ? "External video" : "Private practice"} · full video · ${data.video_id || "video"}`;
+    }
+  } catch {
+    setStatusMessage(`Video failed to load (${data.video_id || "external video"})`, jobInfo);
+  } finally {
+    hideVideoReady();
+  }
+}
+
 function handleAnnotateStart(data) {
   if (isExpiredAnnotateJob(data)) {
     currentJobId = null;
@@ -2269,7 +2336,7 @@ function handleDuplicateCacheHit(data) {
 }
 
 function handleTestStart(data) {
-  if (isPrivatePractice()) return;
+  if (!isSyncPractice()) return;
   goToTestJob(data);
 }
 
@@ -2279,6 +2346,37 @@ function buildPrivatePracticeJob(video) {
     video_id: video.video_id,
     video_file: serverVideoApiPath(video.video_id),
     source_url: video.video_url,
+    annotator_index: 1,
+    annotator_total: 1,
+    segment_window_sec: 30,
+    start_offset_sec: 0,
+    time_origin_sec: 0,
+    segment_end_sec: 30,
+    clip_duration_sec: 30,
+    segment_core_start_sec: 0,
+    segment_core_end_sec: 30,
+    duration_sec: 30,
+    seconds_left: 3600,
+  };
+}
+
+function externalVideoId(url) {
+  try {
+    const parsed = new URL(url);
+    const name = parsed.pathname.split("/").filter(Boolean).pop() || "external-video";
+    return decodeURIComponent(name).replace(/\.[^.]+$/, "") || "external-video";
+  } catch {
+    return "external-video";
+  }
+}
+
+function buildExternalPracticeJob(url) {
+  const videoId = externalVideoId(url);
+  return {
+    job_id: `external-${Date.now()}`,
+    video_id: videoId,
+    video_file: url,
+    source_url: url,
     annotator_index: 1,
     annotator_total: 1,
     segment_window_sec: 30,
@@ -2306,12 +2404,17 @@ function resetPracticeJob() {
 
 function updatePracticeModeUI() {
   const sync = practiceMode === "sync";
-  document.body.classList.toggle("practice-private", !sync);
+  const privateMode = practiceMode === "private";
+  const externalMode = practiceMode === "external";
+  document.body.classList.toggle("practice-private", privateMode);
   btnPracticeSync?.classList.toggle("active", sync);
-  btnPracticePrivate?.classList.toggle("active", !sync);
+  btnPracticePrivate?.classList.toggle("active", privateMode);
+  btnPracticeExternal?.classList.toggle("active", externalMode);
   btnPracticeSync?.setAttribute("aria-pressed", sync ? "true" : "false");
-  btnPracticePrivate?.setAttribute("aria-pressed", sync ? "false" : "true");
-  practiceVideoPanel?.classList.toggle("hidden", sync);
+  btnPracticePrivate?.setAttribute("aria-pressed", privateMode ? "true" : "false");
+  btnPracticeExternal?.setAttribute("aria-pressed", externalMode ? "true" : "false");
+  practiceVideoPanel?.classList.toggle("hidden", !privateMode);
+  externalVideoForm?.classList.toggle("hidden", !externalMode);
   testNextCountdown?.classList.toggle("hidden", !sync);
   if (!sync) {
     apiCountdown?.classList.add("hidden");
@@ -2319,7 +2422,9 @@ function updatePracticeModeUI() {
   if (practiceModeHint) {
     practiceModeHint.textContent = sync
       ? "Scheduled rounds with other online practice users."
-      : "Pick a saved video and practice on the full 30s clip by yourself.";
+      : externalMode
+        ? "Paste a direct video URL and practice locally on that video."
+        : "Pick a saved video and practice on the full 30s clip by yourself.";
   }
   if (practiceEventsHeading) {
     practiceEventsHeading.textContent = sync
@@ -2329,17 +2434,22 @@ function updatePracticeModeUI() {
 }
 
 function setPracticeMode(mode) {
-  if (!IS_PRACTICE_PAGE || (mode !== "sync" && mode !== "private")) return;
+  if (!IS_PRACTICE_PAGE || !["sync", "private", "external"].includes(mode)) return;
   if (mode === practiceMode) return;
   practiceMode = mode;
   updatePracticeModeUI();
   resetPracticeJob();
-  send({ type: "set_practice_mode", mode });
+  send({ type: "set_practice_mode", mode: mode === "sync" ? "sync" : "private" });
   if (mode === "private") {
     stopTestNextCountdown(true);
     send({ type: "list_videos" });
     if (jobInfo) {
       jobInfo.textContent = "Private practice — choose a video from the list";
+    }
+  } else if (mode === "external") {
+    stopTestNextCountdown(true);
+    if (jobInfo) {
+      jobInfo.textContent = "External video — paste a video URL to start";
     }
   } else {
     videoList?.querySelectorAll("button.active").forEach((b) => {
@@ -2365,7 +2475,24 @@ async function startPrivatePractice(video, btn) {
   if (jobInfo) {
     jobInfo.textContent = `Private practice · full 30s · ${video.video_id}`;
   }
-  await startAnnotatorJob(data);
+  await startDirectPracticeJob(data);
+}
+
+async function startExternalPractice(url) {
+  const trimmed = String(url || "").trim();
+  if (!isExternalPractice() || !trimmed) return;
+  let parsed;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    setStatusMessage("Enter a valid video URL.", jobInfo);
+    return;
+  }
+  const data = buildExternalPracticeJob(parsed.href);
+  stopApiCountdown(true);
+  stopTestNextCountdown(true);
+  setAnnotationsLocked(false);
+  await startDirectPracticeJob(data);
 }
 
 function bindVideoListDateHandlers() {
@@ -2388,12 +2515,17 @@ function bindVideoListDateHandlers() {
 function bindPracticeModeControls() {
   btnPracticeSync?.addEventListener("click", () => setPracticeMode("sync"));
   btnPracticePrivate?.addEventListener("click", () => setPracticeMode("private"));
+  btnPracticeExternal?.addEventListener("click", () => setPracticeMode("external"));
+  externalVideoForm?.addEventListener("submit", (e) => {
+    e.preventDefault();
+    startExternalPractice(externalVideoUrl?.value);
+  });
   bindVideoListDateHandlers();
   updatePracticeModeUI();
 }
 
 function goToTestJob(data) {
-  if (isPrivatePractice()) return;
+  if (!isSyncPractice()) return;
   buildLabelButtons();
   showScreen(annotatorScreen);
   showVideoReady();
@@ -2409,7 +2541,7 @@ function goToTestJob(data) {
 }
 
 function handleTestSchedule(data) {
-  if (isPrivatePractice()) return;
+  if (!isSyncPractice()) return;
   nextTestRoundAtSec = data.next_round_at;
   if (!currentJobId) {
     startTestNextCountdown(nextTestRoundAtSec);
@@ -2516,7 +2648,9 @@ function handleMessage(data) {
       break;
     case "practice_mode_ack":
       if (IS_PRACTICE_PAGE && data.mode) {
-        practiceMode = data.mode === "private" ? "private" : "sync";
+        if (practiceMode !== "external") {
+          practiceMode = data.mode === "private" ? "private" : "sync";
+        }
         updatePracticeModeUI();
       }
       break;
