@@ -884,11 +884,11 @@ body.page-home {
   flex: 1 1 calc(50% - 0.3rem);
   padding: 0.32rem 0.45rem;
   border: 1px solid #2a3a52;
-  border-radius: 999px;
+  border-radius: 3px;
   background: rgba(15, 23, 42, 0.55);
   font-size: 0.76rem;
   color: var(--muted);
-  text-shadow: 0 0 8px currentColor;
+  /* text-shadow: 0 0 8px currentColor; */
 }
 
 .annotator-roster-dot {
