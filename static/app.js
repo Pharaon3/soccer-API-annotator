@@ -330,10 +330,7 @@ function createVideoListButton(video, onSelect) {
   btn.className = "video-card-btn";
   const time = formatSavedTime(video.saved_at);
   const labelers = formatLabelerList(video.labeler_names);
-  const generated = video.generated
-    ? `<span class="video-list-generated">Random generated labels</span>`
-    : "";
-  btn.innerHTML = `<strong class="video-list-id">${video.video_id}</strong><span class="video-list-meta">${video.event_count} events · ${time}</span>${generated}<span class="video-list-labelers">${labelers}</span>`;
+  btn.innerHTML = `<strong class="video-list-id">${video.video_id}</strong><span class="video-list-meta">${video.event_count} events · ${time}</span><span class="video-list-labelers">${labelers}</span>`;
   btn.addEventListener("click", () => onSelect(video, btn));
   return btn;
 }
@@ -3010,10 +3007,7 @@ async function loadReviewerVideo(item, btn) {
   }
   reviewerVideo.src = playbackUrl;
   const labelerLine = formatLabelerList(item.labeler_names);
-  const generatedNotice = item.generated
-    ? `<div class="reviewer-meta-generated">Random generated labels${item.generated_reason ? ` · ${item.generated_reason}` : ""}</div>`
-    : "";
-  reviewerMeta.innerHTML = `<div><strong>${vid}</strong></div>${generatedNotice}${item.video_url ? `<div class="reviewer-meta-url">${item.video_url}</div>` : ""}<div class="reviewer-meta-labelers">Labeled by: ${labelerLine}</div></div>`;
+  reviewerMeta.innerHTML = `<div><strong>${vid}</strong></div>${item.video_url ? `<div class="reviewer-meta-url">${item.video_url}</div>` : ""}<div class="reviewer-meta-labelers">Labeled by: ${labelerLine}</div></div>`;
   try {
     const res = await apiFetch(item.annotations_file);
     const data = await res.json();

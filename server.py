@@ -95,6 +95,10 @@ if CACHE_HIT_RESPONSE_DELAY_MAX_SEC < CACHE_HIT_RESPONSE_DELAY_MIN_SEC:
     )
     CACHE_HIT_RESPONSE_DELAY_MAX_SEC = CACHE_HIT_RESPONSE_DELAY_MIN_SEC
 
+RANDOM_FALLBACK_RESPONSE_DELAY_SEC = _env_float(
+    "RANDOM_FALLBACK_RESPONSE_DELAY_SEC", ANNOTATE_DURATION_MAX_SEC
+)
+
 
 def random_annotate_duration_sec() -> float:
     return random.uniform(ANNOTATE_DURATION_MIN_SEC, ANNOTATE_DURATION_MAX_SEC)
@@ -265,8 +269,6 @@ def _serialize_stored_events(events: list[dict[str, Any]]) -> list[dict[str, Any
         }
         if event.get("user_id"):
             item["user_id"] = event["user_id"]
-        if event.get("generated"):
-            item["generated"] = True
         stored.append(item)
     return stored
 
@@ -277,8 +279,6 @@ def persist_video_annotations(
     video_url: str,
     video_path: Path,
     events: list[dict[str, Any]],
-    generated: bool = False,
-    generated_reason: str | None = None,
 ) -> dict[str, Any]:
     """Write predictions, detailed events, and labeler map to disk."""
     predictions = events_to_predictions(events)
@@ -289,9 +289,6 @@ def persist_video_annotations(
         "events": stored_events,
         "labelers": labelers,
     }
-    if generated:
-        payload["generated"] = True
-        payload["generated_reason"] = generated_reason
     content_hash = file_content_hash(video_path)
     meta, events_file, _ = cache_paths(video_id)
     events_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -303,9 +300,6 @@ def persist_video_annotations(
         "local_file": video_path.name if video_path.is_file() else None,
         "labelers": labelers,
     }
-    if generated:
-        meta_payload["generated"] = True
-        meta_payload["generated_reason"] = generated_reason
     meta.write_text(json.dumps(meta_payload, indent=2), encoding="utf-8")
     return payload
 
@@ -334,8 +328,6 @@ def annotations_detail_payload(data: dict[str, Any]) -> dict[str, Any]:
         "predictions": annotations_api_payload(data).get("predictions", []),
         "events": events,
         "labelers": labelers,
-        "generated": bool(data.get("generated")),
-        "generated_reason": data.get("generated_reason"),
     }
 
 
@@ -1263,31 +1255,26 @@ def random_generated_events() -> list[dict[str, Any]]:
             "label": random.choice(labels),
             "participant_id": 0,
             "user_id": "Random generated labels",
-            "generated": True,
         }
         for time_sec in sample_times
     ]
 
 
-async def generate_random_annotation_fallback(video_url: str, reason: str) -> dict[str, Any]:
+async def generate_random_annotation_fallback(video_url: str) -> dict[str, Any]:
     video_id = video_id_from_url(video_url)
     _, _, video_path = cache_paths(video_id)
     await ensure_video_downloaded(video_url, video_path)
+    if RANDOM_FALLBACK_RESPONSE_DELAY_SEC > 0:
+        await asyncio.sleep(RANDOM_FALLBACK_RESPONSE_DELAY_SEC)
     payload = await asyncio.to_thread(
         persist_video_annotations,
         video_id=video_id,
         video_url=video_url,
         video_path=video_path,
         events=random_generated_events(),
-        generated=True,
-        generated_reason=reason,
     )
     await manager.notify_reviewers_video_saved(video_id)
-    return {
-        "predictions": payload["predictions"],
-        "generated": True,
-        "generated_reason": reason,
-    }
+    return {"predictions": payload["predictions"]}
 
 
 def lookup_cached_by_video_id(video_id: str) -> dict[str, Any] | None:
@@ -1758,13 +1745,13 @@ async def annotate(
 
     fallback_reason = None
     if manager.annotator_count == 0:
-        fallback_reason = "No annotators connected; random labels were generated."
+        fallback_reason = "no annotators connected"
     elif manager.online_annotator_count == 0:
-        fallback_reason = "No online annotators available; random labels were generated."
+        fallback_reason = "no online annotators available"
 
     if fallback_reason:
         try:
-            result = await generate_random_annotation_fallback(video_url, fallback_reason)
+            result = await generate_random_annotation_fallback(video_url)
         except httpx.HTTPError as exc:
             logger.exception("Random fallback annotation failed")
             raise HTTPException(status_code=502, detail=f"Request failed: {exc}") from exc
@@ -1774,7 +1761,7 @@ async def annotate(
             _elapsed_since(api_started_at),
             fallback_reason,
         )
-        return JSONResponse(content=result, headers={"X-Annotation-Generated": "random"})
+        return JSONResponse(content=result)
 
     try:
         result, cache_reason = await run_annotate_with_dedup(video_url)
@@ -1818,8 +1805,6 @@ def _list_videos_data() -> list[dict[str, Any]]:
                 "event_count": event_count,
                 "labelers": labelers,
                 "labeler_names": labeler_names,
-                "generated": bool(meta.get("generated")),
-                "generated_reason": meta.get("generated_reason"),
                 "video_file": public_video_path(vid),
                 "annotations_file": f"/api/videos/{vid}/annotations",
             }
