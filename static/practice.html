@@ -80,6 +80,16 @@
             <button type="button" id="btn-practice-private" class="practice-mode-btn" aria-pressed="false">Private practice</button>
             <button type="button" id="btn-practice-external" class="practice-mode-btn" aria-pressed="false">External video</button>
           </div>
+          <div id="private-practice-duration-control" class="private-practice-duration-control hidden">
+            <label for="private-practice-duration">
+              <span>Task time seconds</span>
+              <input type="number" id="private-practice-duration" class="private-practice-duration-input" min="1" max="600" step="1" value="10" inputmode="numeric" />
+            </label>
+            <label for="private-practice-available">
+              <span>Available time seconds</span>
+              <input type="number" id="private-practice-available" class="private-practice-duration-input" min="1" max="600" step="1" value="30" inputmode="numeric" />
+            </label>
+          </div>
           <p id="practice-mode-hint" class="practice-mode-hint">Scheduled rounds with other online practice users.</p>
           <div class="sidebar-toolbar">
             <a href="/" class="small-btn nav-link">Home</a>

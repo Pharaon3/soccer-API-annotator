@@ -61,6 +61,7 @@ const roleStatus = document.getElementById("role-status");
 const connectionStatus = document.getElementById("connection-status");
 const labelButtons = document.getElementById("label-buttons");
 const video = document.getElementById("annotator-video");
+const videoAspect = video?.closest(".video-aspect");
 const overlay = document.getElementById("event-overlay");
 const eventsList = document.getElementById("events-list");
 const annotatorRoster = document.getElementById("annotator-roster");
@@ -99,6 +100,8 @@ let boardTimelineTooltip = null;
 let apiNextWarned5Min = false;
 let apiNextWarned1Min = false;
 let playbackRate = DEFAULT_PLAYBACK_RATE;
+let privatePracticeDurationSec = 10;
+let privatePracticeAvailableSec = 30;
 const btnPlayPause = document.getElementById("btn-play-pause");
 const videoTimeDisplay = document.getElementById("video-time-display");
 const videoFrameDisplay = document.getElementById("video-frame-display");
@@ -127,6 +130,9 @@ const btnPracticeExternal = document.getElementById("btn-practice-external");
 const practiceModeHint = document.getElementById("practice-mode-hint");
 const practiceVideoPanel = document.getElementById("practice-video-panel");
 const practiceEventsHeading = document.getElementById("practice-events-heading");
+const privatePracticeDurationControl = document.getElementById("private-practice-duration-control");
+const privatePracticeDurationInput = document.getElementById("private-practice-duration");
+const privatePracticeAvailableInput = document.getElementById("private-practice-available");
 const externalVideoForm = document.getElementById("external-video-form");
 const externalVideoUrl = document.getElementById("external-video-url");
 
@@ -179,6 +185,7 @@ let jobCoreGlobalEnd = 10;
 let jobPlayGlobalStart = 0;
 let jobPlayGlobalEnd = 10;
 let jobWindowSec = 30;
+let jobVideoLocalOrigin = 0;
 let arrowHoldTimer = null;
 let arrowHoldDelay = null;
 let arrowHoldDir = 0;
@@ -202,6 +209,9 @@ let annotationsLocked = false;
 let selectedEventId = null;
 let eventCandidateFrames = [];
 let eventCandidateSnapRangeFrames = DEFAULT_EVENT_CANDIDATE_SNAP_RANGE_FRAMES;
+let videoPaddingOverlay = null;
+let timelineMarkerDrag = null;
+let suppressTimelineMarkerClick = false;
 
 const EVENT_DELETE_ICON = `<svg class="event-delete-icon" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M6 7h12v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V7zm3-4h6l1 1h4v2H4V4h4l1-1zM9 9v9h2V9H9zm4 0v9h2V9h-2z"/></svg>`;
 
@@ -257,6 +267,42 @@ function isLocalPractice() {
 
 function isSyncPractice() {
   return IS_PRACTICE_PAGE && practiceMode === "sync";
+}
+
+function normalizePrivatePracticeDuration(value) {
+  const n = Math.floor(Number(value));
+  return Number.isFinite(n) && n > 0 ? Math.min(n, 600) : 10;
+}
+
+function normalizePrivatePracticeAvailable(value) {
+  const n = Math.floor(Number(value));
+  return Number.isFinite(n) && n > 0 ? Math.min(n, 600) : 30;
+}
+
+function privatePracticeDuration() {
+  privatePracticeDurationSec = normalizePrivatePracticeDuration(
+    privatePracticeDurationInput?.value ?? privatePracticeDurationSec
+  );
+  if (privatePracticeDurationInput) {
+    privatePracticeDurationInput.value = String(privatePracticeDurationSec);
+  }
+  return privatePracticeDurationSec;
+}
+
+function privatePracticeAvailableTime() {
+  privatePracticeAvailableSec = normalizePrivatePracticeAvailable(
+    privatePracticeAvailableInput?.value ?? privatePracticeAvailableSec
+  );
+  if (privatePracticeAvailableInput) {
+    privatePracticeAvailableInput.value = String(privatePracticeAvailableSec);
+  }
+  return privatePracticeAvailableSec;
+}
+
+function randomPrivatePracticeStart(videoDuration, taskDuration) {
+  const available = Math.max(0, Number(videoDuration) - Number(taskDuration));
+  if (!Number.isFinite(available) || available <= 0) return 0;
+  return Math.random() * available;
 }
 
 function hasBoardTimeline() {
@@ -457,6 +503,26 @@ function isInAnnotationRange(globalT) {
   );
 }
 
+function ensureVideoPaddingOverlay() {
+  if (!videoAspect) return null;
+  if (videoPaddingOverlay) return videoPaddingOverlay;
+  videoPaddingOverlay = document.createElement("div");
+  videoPaddingOverlay.className = "video-padding-overlay hidden";
+  videoPaddingOverlay.setAttribute("aria-hidden", "true");
+  videoAspect.appendChild(videoPaddingOverlay);
+  return videoPaddingOverlay;
+}
+
+function updateVideoPaddingOverlay() {
+  const padOverlay = ensureVideoPaddingOverlay();
+  if (!padOverlay) return;
+  const show =
+    !!video?.src &&
+    jobPlayGlobalEnd > jobPlayGlobalStart &&
+    !isInAnnotationRange(globalTimeFromVideo());
+  padOverlay.classList.toggle("hidden", !show);
+}
+
 function canEditAnnotations() {
   return !!currentJobId && !annotationsLocked && !!video.src;
 }
@@ -536,6 +602,30 @@ function clearSelectedEvent() {
   renderSessionEvents();
 }
 
+function removeEventFromServer(event) {
+  if (!event || !currentJobId || isLocalPractice()) return;
+  const pid = myParticipantId ?? 0;
+  send({
+    type: "annotation_remove",
+    job_id: currentJobId,
+    time_sec: event.time_sec,
+    label: event.label,
+    uid: event.uid || `p${pid}-${roundTimeSec(event.time_sec)}-${event.label}`,
+  });
+}
+
+function addEventToServer(event) {
+  if (!event || !currentJobId || isLocalPractice()) return;
+  send({
+    type: "annotation",
+    job_id: currentJobId,
+    label: event.label,
+    time_sec: event.time_sec,
+    frame: event.frame,
+    labeled_time_sec: event.labeled_time_sec ?? event.time_sec,
+  });
+}
+
 function setSelectedEvent(eventId) {
   const ev = jobEvents.find((e) => e.id === eventId);
   if (
@@ -581,21 +671,12 @@ function replaceSelectedEventLabel(labelId) {
   renderTimelineMarkers();
   showOverlay(labelId, frame);
   if (isLocalPractice()) return;
-  send({
-    type: "annotation_remove",
-    job_id: currentJobId,
+  removeEventFromServer({
     time_sec: oldTimeSec,
     label: oldLabel,
     uid: oldUid || `p${pid}-${roundTimeSec(oldTimeSec)}-${oldLabel}`,
   });
-  send({
-    type: "annotation",
-    job_id: currentJobId,
-    label: labelId,
-    time_sec,
-    frame,
-    labeled_time_sec: ev.labeled_time_sec ?? time_sec,
-  });
+  addEventToServer(ev);
 }
 
 function findMyEventAtTimeAndLabel(timeSec, labelId) {
@@ -620,6 +701,42 @@ function markerStackOffsetAtFrame(events, index) {
   return idx * 16;
 }
 
+function myEventsAtFrame(frame) {
+  return jobEvents.filter(
+    (e) =>
+      e.participant_id === myParticipantId &&
+      (e.frame ?? timeToFrame(e.time_sec)) === frame
+  );
+}
+
+function moveMyEventsAtFrame(fromFrame, toFrame) {
+  if (!canEditAnnotations() || fromFrame === toFrame) return false;
+  const clampedFrame = Math.max(
+    timeToFrame(jobCoreGlobalStart),
+    Math.min(timeToFrame(jobCoreGlobalEnd), toFrame)
+  );
+  if (fromFrame === clampedFrame) return false;
+  const eventsToMove = myEventsAtFrame(fromFrame);
+  if (!eventsToMove.length) return false;
+
+  const beforeEvents = eventsToMove.map((event) => ({ ...event }));
+  beforeEvents.forEach(removeEventFromServer);
+  eventsToMove.forEach((event) => {
+    const adjusted = eventWithFrame(event, clampedFrame);
+    event.time_sec = adjusted.time_sec;
+    event.frame = adjusted.frame;
+    event.uid = adjusted.uid;
+    addEventToServer(event);
+  });
+
+  sessionEvents = jobEvents.filter((x) => x.participant_id === myParticipantId);
+  renderSessionEvents();
+  renderTimelineMarkers();
+  clearSelectedEvent();
+  seekToFrame(clampedFrame);
+  return true;
+}
+
 function seekToEvent(event) {
   if (!video.src || !event) return;
   video.pause();
@@ -641,6 +758,35 @@ function seekAnnotatorByClientX(clientX) {
   video.currentTime = localTimeFromGlobal(clamped);
   updateVideoHud();
   updatePlayPauseButton();
+}
+
+function frameFromTimelineClientX(clientX) {
+  if (!videoTimeline) return null;
+  const rect = videoTimeline.getBoundingClientRect();
+  if (rect.width <= 0) return null;
+  const pct = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+  const timelineSec = Math.max(0.001, jobPlayGlobalEnd - jobPlayGlobalStart);
+  const globalT = jobPlayGlobalStart + pct * timelineSec;
+  const clamped = Math.min(jobCoreGlobalEnd, Math.max(jobCoreGlobalStart, globalT));
+  return timeToFrame(clamped);
+}
+
+function timelinePctFromFrame(frame) {
+  const timelineSec = Math.max(0.001, jobPlayGlobalEnd - jobPlayGlobalStart);
+  const timeSec = frameToTime(frame);
+  return Math.min(
+    100,
+    Math.max(0, ((timeSec - jobPlayGlobalStart) / timelineSec) * 100)
+  );
+}
+
+function setTimelineMarkersFramePosition(frame, markers) {
+  const pct = timelinePctFromFrame(frame);
+  markers.forEach((marker) => {
+    marker.style.left = `${pct}%`;
+    marker.dataset.frame = String(frame);
+    marker.dataset.time = String(roundTimeSec(frameToTime(frame)));
+  });
 }
 
 function setStatusMessage(text, target = roleStatus) {
@@ -1120,6 +1266,9 @@ function startApiCountdownSecondsLeft(secondsLeft) {
         currentJobId = null;
         loadedVideoJobId = null;
         if (nextTestRoundAtSec) startTestNextCountdown(nextTestRoundAtSec);
+      } else if (IS_PRACTICE_PAGE && isPrivatePractice()) {
+        video.pause();
+        updatePlayPauseButton();
       } else if (IS_ANNOTATOR_PAGE && !IS_PRACTICE_PAGE) {
         const finishedJobId = currentJobId;
         clearPostDeadlineCleanupTimer();
@@ -1584,11 +1733,11 @@ function updatePlayPauseButton() {
 }
 
 function globalTimeFromVideo() {
-  return (video.currentTime || 0) + (jobTimeOrigin || 0);
+  return (video.currentTime || 0) - (jobVideoLocalOrigin || 0) + (jobTimeOrigin || 0);
 }
 
 function localTimeFromGlobal(globalT) {
-  return globalT - (jobTimeOrigin || 0);
+  return globalT - (jobTimeOrigin || 0) + (jobVideoLocalOrigin || 0);
 }
 
 function placeTimelineReadout(timelineEl, seekEl, readoutEl) {
@@ -1686,6 +1835,7 @@ function bindPlaybackSpeedControls() {
 
 function updateVideoHud() {
   if (!video.src) {
+    updateVideoPaddingOverlay();
     updateAnnotatorInteractionState();
     return;
   }
@@ -1703,6 +1853,7 @@ function updateVideoHud() {
     seekSyncing = false;
   }
   placeTimelineReadout(videoTimeline, videoSeek, videoTimeline?.querySelector(".timeline-live-readout"));
+  updateVideoPaddingOverlay();
   updatePlayPauseButton();
   updateAnnotatorInteractionState();
 }
@@ -1811,7 +1962,8 @@ function renderTimelineMarkers() {
       const labelName = labelDisplayName(e.label);
       const who = mine ? "You" : `Annotator #${e.participant_id}`;
       const stackY = markerStackOffsetAtFrame(sorted, i);
-      return `<button type="button" class="timeline-marker${mine ? " mine" : ""}" data-time="${e.time_sec}" data-frame="${e.frame}" data-label="${e.label}" data-label-name="${labelName}" data-who="${who}" data-event-id="${e.id ?? ""}" data-marker-color="${color}" style="left:${pct}%;background:${color};--stack-y:${stackY}px" aria-label="${labelName}, frame ${e.frame}"></button>`;
+      const draggable = mine && canEditAnnotations();
+      return `<button type="button" class="timeline-marker${mine ? " mine" : ""}${draggable ? " timeline-marker-draggable" : ""}" data-time="${e.time_sec}" data-frame="${e.frame}" data-label="${e.label}" data-label-name="${labelName}" data-who="${who}" data-event-id="${e.id ?? ""}" data-marker-color="${color}" style="left:${pct}%;background:${color};--stack-y:${stackY}px" aria-label="${labelName}, frame ${e.frame}" title="${draggable ? "Drag to move all events on this frame" : ""}"></button>`;
     })
     .join("");
   const candidateMarkers = eventCandidateFrames
@@ -2265,6 +2417,16 @@ function seekToFrame(frame) {
   updatePlayPauseButton();
 }
 
+function scrubPausedToFrame(frame) {
+  if (!video.src) return;
+  const { start, end } = playbackLocalBounds();
+  const localTime = localTimeFromGlobal(frameToTime(frame));
+  video.pause();
+  video.currentTime = Math.min(end, Math.max(start, localTime));
+  updateVideoHud();
+  updatePlayPauseButton();
+}
+
 function deleteEventAndSeekBack(event, frameOffset) {
   if (!event) return false;
   const frame = event.frame ?? timeToFrame(event.time_sec);
@@ -2502,6 +2664,7 @@ async function startDirectPracticeJob(data) {
   nextEventId = 0;
   eventCandidateFrames = [];
   applyJobTiming(data);
+  jobVideoLocalOrigin = 0;
   myParticipantId = myParticipantId ?? 1;
   renderSessionEvents();
   renderTimelineMarkers();
@@ -2517,22 +2680,39 @@ async function startDirectPracticeJob(data) {
     applyPlaybackRate();
     const duration =
       video.duration && Number.isFinite(video.duration) ? video.duration : 30;
+    const isPrivate = isPrivatePractice();
+    const taskDuration = isPrivate
+      ? Math.min(privatePracticeDuration(), duration)
+      : duration;
+    const clipStart = isPrivate
+      ? randomPrivatePracticeStart(duration, taskDuration)
+      : 0;
+    const clipEnd = clipStart + taskDuration;
     data.segment_window_sec = duration;
-    data.segment_end_sec = duration;
-    data.clip_duration_sec = duration;
-    data.segment_core_end_sec = duration;
+    data.start_offset_sec = clipStart;
+    data.time_origin_sec = 0;
+    data.segment_end_sec = taskDuration;
+    data.clip_duration_sec = taskDuration;
+    data.segment_core_start_sec = 0;
+    data.segment_core_end_sec = taskDuration;
+    data.duration_sec = taskDuration;
+    jobVideoLocalOrigin = clipStart;
     applyJobTiming(data);
-    await waitForVideoAtOffset(0);
+    await waitForVideoAtOffset(clipStart);
     updateTimelineSeekRange();
     updateTimelineZones();
     estimateFps();
-    video.currentTime = 0;
+    video.currentTime = clipStart;
     await video.play().catch(() => {});
     startVideoHudLoop();
     updateVideoHud();
     renderTimelineMarkers();
     if (jobInfo) {
-      jobInfo.textContent = `${isExternalPractice() ? "External video" : "Private practice"} · full video · ${data.video_id || "video"}`;
+      const label = isExternalPractice() ? "External video" : "Private practice";
+      const windowText = isPrivate
+        ? `${taskDuration.toFixed(0)}s from ${clipStart.toFixed(1)}s`
+        : "full video";
+      jobInfo.textContent = `${label} · ${windowText} · ${data.video_id || "video"}`;
     }
   } catch {
     setStatusMessage(`Video failed to load (${data.video_id || "external video"})`, jobInfo);
@@ -2581,7 +2761,7 @@ function handleTestStart(data) {
   goToTestJob(data);
 }
 
-function buildPrivatePracticeJob(video) {
+function buildPrivatePracticeJob(video, durationSec = privatePracticeDuration()) {
   return {
     job_id: `private-${video.video_id}-${Date.now()}`,
     video_id: video.video_id,
@@ -2589,15 +2769,15 @@ function buildPrivatePracticeJob(video) {
     source_url: video.video_url,
     annotator_index: 1,
     annotator_total: 1,
-    segment_window_sec: 30,
+    segment_window_sec: durationSec,
     start_offset_sec: 0,
     time_origin_sec: 0,
-    segment_end_sec: 30,
-    clip_duration_sec: 30,
+    segment_end_sec: durationSec,
+    clip_duration_sec: durationSec,
     segment_core_start_sec: 0,
-    segment_core_end_sec: 30,
-    duration_sec: 30,
-    seconds_left: 3600,
+    segment_core_end_sec: durationSec,
+    duration_sec: durationSec,
+    seconds_left: durationSec,
   };
 }
 
@@ -2656,6 +2836,7 @@ function updatePracticeModeUI() {
   btnPracticePrivate?.setAttribute("aria-pressed", privateMode ? "true" : "false");
   btnPracticeExternal?.setAttribute("aria-pressed", externalMode ? "true" : "false");
   practiceVideoPanel?.classList.toggle("hidden", !privateMode);
+  privatePracticeDurationControl?.classList.toggle("hidden", !privateMode);
   externalVideoForm?.classList.toggle("hidden", !externalMode);
   testNextCountdown?.classList.toggle("hidden", !sync);
   if (!sync) {
@@ -2666,7 +2847,7 @@ function updatePracticeModeUI() {
       ? "Scheduled rounds with other online practice users."
       : externalMode
         ? "Paste a direct video URL and practice locally on that video."
-        : "Pick a saved video and practice on the full 30s clip by yourself.";
+        : "Pick a saved video and practice a random clip with the selected task time.";
   }
   if (practiceEventsHeading) {
     practiceEventsHeading.textContent = sync
@@ -2710,14 +2891,17 @@ async function startPrivatePractice(video, btn) {
     el.classList.remove("active");
   });
   btn?.classList.add("active");
-  const data = buildPrivatePracticeJob(video);
+  const durationSec = privatePracticeDuration();
+  const availableSec = privatePracticeAvailableTime();
+  const data = buildPrivatePracticeJob(video, durationSec);
   stopApiCountdown(true);
   stopTestNextCountdown(true);
   setAnnotationsLocked(false);
   if (jobInfo) {
-    jobInfo.textContent = `Private practice · full 30s · ${video.video_id}`;
+    jobInfo.textContent = `Private practice · task ${durationSec}s · available ${availableSec}s · ${video.video_id}`;
   }
   await startDirectPracticeJob(data);
+  startApiCountdownSecondsLeft(availableSec);
 }
 
 async function startExternalPractice(url) {
@@ -2758,6 +2942,18 @@ function bindPracticeModeControls() {
   btnPracticeSync?.addEventListener("click", () => setPracticeMode("sync"));
   btnPracticePrivate?.addEventListener("click", () => setPracticeMode("private"));
   btnPracticeExternal?.addEventListener("click", () => setPracticeMode("external"));
+  privatePracticeDurationInput?.addEventListener("change", () => {
+    privatePracticeDuration();
+  });
+  privatePracticeDurationInput?.addEventListener("blur", () => {
+    privatePracticeDuration();
+  });
+  privatePracticeAvailableInput?.addEventListener("change", () => {
+    privatePracticeAvailableTime();
+  });
+  privatePracticeAvailableInput?.addEventListener("blur", () => {
+    privatePracticeAvailableTime();
+  });
   externalVideoForm?.addEventListener("submit", (e) => {
     e.preventDefault();
     startExternalPractice(externalVideoUrl?.value);
@@ -3160,6 +3356,12 @@ videoSeek?.addEventListener("input", () => {
 });
 
 timelineMarkers?.addEventListener("click", (e) => {
+  if (suppressTimelineMarkerClick) {
+    suppressTimelineMarkerClick = false;
+    e.preventDefault();
+    e.stopPropagation();
+    return;
+  }
   const btn = e.target.closest(".timeline-marker");
   if (!btn) return;
   const eventId = Number(btn.dataset.eventId);
@@ -3177,6 +3379,71 @@ timelineMarkers?.addEventListener("click", (e) => {
   video.currentTime = localTimeFromGlobal(globalTime);
   updateVideoHud();
   updatePlayPauseButton();
+});
+
+timelineMarkers?.addEventListener("pointerdown", (e) => {
+  const btn = e.target.closest(".timeline-marker-draggable");
+  if (!btn || !canEditAnnotations()) return;
+  const frame = Number(btn.dataset.frame);
+  if (!Number.isFinite(frame)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  hideTimelineMarkerTooltipFor(videoTimeline);
+  const markers = Array.from(
+    timelineMarkers.querySelectorAll(".timeline-marker-draggable")
+  ).filter((marker) => Number(marker.dataset.frame) === frame);
+  timelineMarkerDrag = {
+    pointerId: e.pointerId,
+    fromFrame: frame,
+    currentFrame: frame,
+    markers,
+    wasPlaying: !video.paused,
+    moved: false,
+  };
+  scrubPausedToFrame(frame);
+  markers.forEach((marker) => marker.classList.add("dragging"));
+  timelineMarkers.setPointerCapture?.(e.pointerId);
+});
+
+timelineMarkers?.addEventListener("pointermove", (e) => {
+  if (!timelineMarkerDrag || timelineMarkerDrag.pointerId !== e.pointerId) return;
+  const frame = frameFromTimelineClientX(e.clientX);
+  if (frame == null) return;
+  if (frame !== timelineMarkerDrag.fromFrame) timelineMarkerDrag.moved = true;
+  timelineMarkerDrag.currentFrame = frame;
+  setTimelineMarkersFramePosition(frame, timelineMarkerDrag.markers);
+  scrubPausedToFrame(frame);
+});
+
+function finishTimelineMarkerDrag(e, commit) {
+  if (!timelineMarkerDrag || timelineMarkerDrag.pointerId !== e.pointerId) return;
+  const drag = timelineMarkerDrag;
+  timelineMarkerDrag = null;
+  timelineMarkers?.querySelectorAll(".timeline-marker.dragging").forEach((marker) => {
+    marker.classList.remove("dragging");
+  });
+  if (timelineMarkers?.hasPointerCapture?.(e.pointerId)) {
+    timelineMarkers.releasePointerCapture?.(e.pointerId);
+  }
+  if (commit && drag.moved) {
+    suppressTimelineMarkerClick = true;
+    setTimeout(() => {
+      suppressTimelineMarkerClick = false;
+    }, 0);
+    moveMyEventsAtFrame(drag.fromFrame, drag.currentFrame);
+  }
+  if (commit && drag.wasPlaying) {
+    video.play().catch(() => {});
+    updatePlayPauseButton();
+  }
+}
+
+timelineMarkers?.addEventListener("pointerup", (e) => {
+  finishTimelineMarkerDrag(e, true);
+});
+
+timelineMarkers?.addEventListener("pointercancel", (e) => {
+  finishTimelineMarkerDrag(e, false);
 });
 
 videoTimeline?.addEventListener("pointerdown", (e) => {

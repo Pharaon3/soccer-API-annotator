@@ -176,6 +176,45 @@ body.page-practice .practice-video-panel .video-list-id {
   background: rgba(15, 20, 30, 0.35);
 }
 
+.private-practice-duration-control,
+.private-practice-duration-control label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.private-practice-duration-control {
+  margin: 0 0.75rem 0.65rem;
+  padding: 0.65rem;
+  border: 1px solid #3d3558;
+  border-radius: 10px;
+  background: rgba(15, 20, 30, 0.35);
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.private-practice-duration-control.hidden {
+  display: none;
+}
+
+.private-practice-duration-input {
+  width: 100%;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid #3d3558;
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.82rem;
+}
+
+.private-practice-duration-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
 .external-video-form.hidden,
 .practice-video-panel .hidden {
   display: none;
@@ -1268,6 +1307,34 @@ body.page-home {
   object-fit: contain;
 }
 
+.video-padding-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: rgba(2, 6, 23, 0.48);
+  color: rgba(248, 250, 252, 0.92);
+  font-size: clamp(1rem, 2vw, 1.7rem);
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.video-padding-overlay.hidden {
+  display: none;
+}
+
+.video-padding-overlay span {
+  padding: 0.65rem 1rem;
+  border: 1px solid rgba(248, 250, 252, 0.38);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.72);
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.38);
+}
+
 .video-controller {
   flex-shrink: 0;
 }
@@ -1753,6 +1820,21 @@ body.page-review .board-video-controller {
   transform: translateY(calc(-1 * var(--stack-y)));
   transition: transform 0.12s ease, box-shadow 0.12s ease;
   z-index: 12;
+}
+
+.timeline-marker-draggable {
+  cursor: grab;
+  touch-action: none;
+}
+
+.timeline-marker-dragging,
+.timeline-marker.dragging {
+  cursor: grabbing;
+  z-index: 20;
+  transition: none;
+  box-shadow:
+    0 0 0 2px rgba(255, 255, 255, 0.6),
+    0 0 18px rgba(61, 139, 253, 0.8);
 }
 
 .timeline-marker::before {

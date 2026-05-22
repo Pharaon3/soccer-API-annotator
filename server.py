@@ -150,8 +150,8 @@ FIRST_PART_EXTRA_SEC = 2.0
 PRACTICE_INTERVAL_SEC = 30
 API_CALL_INTERVAL_SEC = int(os.getenv("API_CALL_INTERVAL_SEC", "3600"))
 _next_api_call_at: float | None = None
-# Segment proxy encode: 640x360, 25 fps, H.264 ultrafast
-SEGMENT_SCALE_FILTER = "scale=640:360"
+# Segment proxy encode: 480x270, 25 fps, H.264 ultrafast
+SEGMENT_SCALE_FILTER = "scale=480:270"
 SEGMENT_FPS = 25
 SEGMENT_CRF = 28
 SEGMENT_FFMPEG_PRESET = "ultrafast"
