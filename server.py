@@ -922,29 +922,47 @@ class ConnectionManager:
         self.reviewers.discard(ws)
 
     def rank_of_participant(self, participant_id: int) -> int:
-        ordered = sorted(self.participants.keys())
+        ordered = [
+            s.annotator_id
+            for s in self.sort_sessions_for_fixed_rank(self.snapshot_participants())
+        ]
         return ordered.index(participant_id) + 1
 
     def snapshot_participants(self) -> list[AnnotatorSession]:
         return sorted(self.participants.values(), key=lambda s: s.annotator_id)
 
-    def snapshot_online_annotators(self) -> list[AnnotatorSession]:
+    @staticmethod
+    def _configured_user_rank(user_id: str | None) -> int:
+        if not user_id:
+            return len(list_static_user_ids())
+        try:
+            return list_static_user_ids().index(user_id)
+        except ValueError:
+            return len(list_static_user_ids())
+
+    def sort_sessions_for_fixed_rank(
+        self, sessions: list[AnnotatorSession]
+    ) -> list[AnnotatorSession]:
         return sorted(
-            (s for s in self.annotators.values() if s.online),
-            key=lambda s: s.annotator_id,
+            sessions,
+            key=lambda s: (self._configured_user_rank(s.user_id), s.annotator_id),
+        )
+
+    def snapshot_online_annotators(self) -> list[AnnotatorSession]:
+        return self.sort_sessions_for_fixed_rank(
+            [s for s in self.annotators.values() if s.online]
         )
 
     def snapshot_test_annotators(self) -> list[AnnotatorSession]:
-        return sorted(self.test_annotators.values(), key=lambda s: s.annotator_id)
+        return self.sort_sessions_for_fixed_rank(list(self.test_annotators.values()))
 
     def snapshot_online_test_annotators(self) -> list[AnnotatorSession]:
-        return sorted(
-            (
+        return self.sort_sessions_for_fixed_rank(
+            [
                 s
                 for s in self.test_annotators.values()
                 if s.online and s.practice_mode == "sync"
-            ),
-            key=lambda s: s.annotator_id,
+            ]
         )
 
     @staticmethod

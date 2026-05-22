@@ -57,7 +57,7 @@ def static_users_configured() -> bool:
 
 
 def list_static_user_ids() -> list[str]:
-    return sorted(STATIC_USERS.keys())
+    return list(STATIC_USERS.keys())
 
 
 def auth_cookie_params() -> dict[str, bool | str]:

@@ -2,7 +2,7 @@ const DEFAULT_FPS = 25;
 const DEFAULT_PLAYBACK_RATE = 1;
 const PLAYBACK_RATE_STEP = 0.1;
 const MIN_PLAYBACK_RATE = 0.1;
-const FIRST_PART_EXTRA_SEC = 3;
+const FIRST_PART_EXTRA_SEC = 2;
 const ARROW_HOLD_DELAY_MS = 60;
 const ARROW_HOLD_INTERVAL_MS = 28;
 const API_RESPONSE_FALLBACK_SEC = 26;
@@ -2145,7 +2145,8 @@ function seekToFrame(frame) {
   if (!video.src) return;
   const { start, end } = playbackLocalBounds();
   const wasPlaying = !video.paused;
-  video.currentTime = Math.min(end, Math.max(start, frameToTime(frame)));
+  const localTime = localTimeFromGlobal(frameToTime(frame));
+  video.currentTime = Math.min(end, Math.max(start, localTime));
   if (wasPlaying) video.play().catch(() => {});
   updateVideoHud();
   updatePlayPauseButton();
