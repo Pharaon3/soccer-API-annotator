@@ -54,12 +54,13 @@ ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 VIDEOS_DIR = DATA_DIR / "videos"
 ANNOTATIONS_DIR = DATA_DIR / "annotations"
+USER_SETTINGS_DIR = DATA_DIR / "user_settings"
 STATIC_DIR = ROOT / "static"
 VIDEO_PREPARE_LOG = DATA_DIR / "video_prepare.log"
 
 
 def ensure_data_dirs() -> None:
-    for directory in (VIDEOS_DIR, ANNOTATIONS_DIR):
+    for directory in (VIDEOS_DIR, ANNOTATIONS_DIR, USER_SETTINGS_DIR):
         directory.mkdir(parents=True, exist_ok=True)
 
 
@@ -239,6 +240,76 @@ def safe_video_id(video_id: str) -> bool:
 
 def public_video_path(video_id: str) -> str:
     return f"/api/video/{video_id}"
+
+
+_SHORTCUT_KEY_RE = re.compile(r"^[a-z0-9]$")
+_SAFE_SETTINGS_USER_RE = re.compile(r"[^a-zA-Z0-9_.-]+")
+
+
+def default_label_shortcuts() -> dict[str, str]:
+    return {
+        str(label["id"]): str(label["key"]).lower()
+        for label in labels_api_payload()["labels"]
+    }
+
+
+def shortcut_settings_path(user_id: str) -> Path:
+    safe_user_id = _SAFE_SETTINGS_USER_RE.sub("_", user_id).strip("._")
+    if not safe_user_id:
+        safe_user_id = "user"
+    return USER_SETTINGS_DIR / f"{safe_user_id}.shortcuts.json"
+
+
+def validate_shortcuts(shortcuts: dict[str, str]) -> dict[str, str]:
+    defaults = default_label_shortcuts()
+    normalized: dict[str, str] = {}
+    used: dict[str, str] = {}
+    for label_id, key in shortcuts.items():
+        if label_id not in LABEL_IDS:
+            raise HTTPException(status_code=400, detail=f"Unknown label id: {label_id}")
+        value = str(key).strip().lower()
+        if not _SHORTCUT_KEY_RE.match(value):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Shortcut for {label_id} must be one letter or digit",
+            )
+        if value in used:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Shortcut {value!r} is already used by {used[value]}",
+            )
+        normalized[label_id] = value
+        used[value] = label_id
+    return {label_id: normalized.get(label_id, key) for label_id, key in defaults.items()}
+
+
+def load_user_shortcuts(user_id: str) -> dict[str, str]:
+    path = shortcut_settings_path(user_id)
+    if not path.is_file():
+        return default_label_shortcuts()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        logger.warning("Invalid shortcut settings for user %s; using defaults", user_id)
+        return default_label_shortcuts()
+    raw = payload.get("shortcuts") if isinstance(payload, dict) else None
+    if not isinstance(raw, dict):
+        return default_label_shortcuts()
+    try:
+        return validate_shortcuts({str(k): str(v) for k, v in raw.items()})
+    except HTTPException:
+        logger.warning("Invalid shortcut settings for user %s; using defaults", user_id)
+        return default_label_shortcuts()
+
+
+def save_user_shortcuts(user_id: str, shortcuts: dict[str, str]) -> dict[str, str]:
+    normalized = validate_shortcuts(shortcuts)
+    path = shortcut_settings_path(user_id)
+    path.write_text(
+        json.dumps({"user_id": user_id, "shortcuts": normalized}, indent=2),
+        encoding="utf-8",
+    )
+    return normalized
 
 
 def job_seconds_left(deadline_at: float, duration_sec: float) -> int:
@@ -505,6 +576,10 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
 
+class ShortcutSettingsRequest(BaseModel):
+    shortcuts: dict[str, str] = Field(default_factory=dict)
+
+
 def _auth_token(request: Request) -> str | None:
     return request.cookies.get(AUTH_COOKIE_NAME)
 
@@ -514,6 +589,14 @@ def _require_auth(request: Request) -> str:
     if not verify_session(token):
         raise HTTPException(status_code=401, detail="Not authenticated")
     return token or ""
+
+
+def _require_user_id(request: Request) -> str:
+    token = _auth_token(request)
+    user_id = get_session_user_id(token)
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user_id
 
 
 def _is_authenticated(request: Request) -> bool:
@@ -2078,8 +2161,30 @@ async def get_annotations(video_id: str, request: Request) -> dict[str, Any]:
 
 @app.get("/api/labels")
 async def get_labels(request: Request) -> dict[str, Any]:
-    _require_auth(request)
-    return labels_api_payload()
+    user_id = _require_user_id(request)
+    payload = labels_api_payload()
+    payload["shortcuts"] = load_user_shortcuts(user_id)
+    return payload
+
+
+@app.get("/api/label-shortcuts")
+async def get_label_shortcuts(request: Request) -> dict[str, Any]:
+    user_id = _require_user_id(request)
+    return {
+        "shortcuts": load_user_shortcuts(user_id),
+        "defaults": default_label_shortcuts(),
+    }
+
+
+@app.put("/api/label-shortcuts")
+async def update_label_shortcuts(
+    body: ShortcutSettingsRequest, request: Request
+) -> dict[str, Any]:
+    user_id = _require_user_id(request)
+    return {
+        "shortcuts": save_user_shortcuts(user_id, body.shortcuts),
+        "defaults": default_label_shortcuts(),
+    }
 
 
 @app.post("/api/auth/verify")

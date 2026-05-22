@@ -1161,6 +1161,74 @@ body.page-home {
   transform: scale(0.97);
 }
 
+.shortcut-editor {
+  grid-column: 1 / -1;
+  margin-top: 0.1rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid #2a3a52;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.92);
+  color: var(--muted);
+}
+
+.shortcut-editor summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #d8e0eb;
+}
+
+.shortcut-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.35rem;
+  margin-top: 0.45rem;
+}
+
+.shortcut-editor-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.35rem;
+  min-width: 0;
+  font-size: 0.74rem;
+}
+
+.shortcut-editor-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shortcut-editor-row input {
+  width: 2.1rem;
+  padding: 0.22rem 0.3rem;
+  border: 1px solid #3a4f6a;
+  border-radius: 6px;
+  background: #0f172a;
+  color: #f8fafc;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.shortcut-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.shortcut-editor-status {
+  font-size: 0.78rem;
+  color: var(--success);
+}
+
+.shortcut-editor-status.error {
+  color: #ef4444;
+}
+
 .video-wrap {
   margin: 0;
   padding: 0;

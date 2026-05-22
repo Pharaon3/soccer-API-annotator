@@ -49,6 +49,8 @@ let LABELS = [];
 let labelKeyboardRows = DEFAULT_LABEL_KEYBOARD_ROWS;
 let keyToLabel = {};
 let labelFrameOffsets = {};
+let defaultLabelShortcuts = {};
+let currentLabelShortcuts = {};
 
 const roleScreen = document.getElementById("role-screen");
 const annotatorScreen = document.getElementById("annotator-screen");
@@ -210,7 +212,11 @@ async function loadLabelConfig() {
   const data = await res.json();
   LABELS = data.labels || [];
   labelKeyboardRows = data.keyboard_rows || DEFAULT_LABEL_KEYBOARD_ROWS;
-  keyToLabel = Object.fromEntries(LABELS.map((l) => [l.key, l.id]));
+  defaultLabelShortcuts = Object.fromEntries(LABELS.map((l) => [l.id, l.key]));
+  currentLabelShortcuts = { ...defaultLabelShortcuts, ...(data.shortcuts || {}) };
+  keyToLabel = Object.fromEntries(
+    Object.entries(currentLabelShortcuts).map(([labelId, key]) => [key, labelId])
+  );
   labelFrameOffsets = data.frame_offsets || {};
 }
 
@@ -1909,6 +1915,22 @@ function formatLabelKey(key) {
   return key.length === 1 ? key.toUpperCase() : key;
 }
 
+function normalizeShortcutKey(key) {
+  const value = String(key || "").trim().toLowerCase();
+  return /^[a-z0-9]$/.test(value) ? value : "";
+}
+
+function applyLabelShortcuts(shortcuts) {
+  currentLabelShortcuts = { ...defaultLabelShortcuts, ...(shortcuts || {}) };
+  keyToLabel = Object.fromEntries(
+    Object.entries(currentLabelShortcuts).map(([labelId, key]) => [key, labelId])
+  );
+}
+
+function labelShortcut(labelId) {
+  return currentLabelShortcuts[labelId] || defaultLabelShortcuts[labelId] || "";
+}
+
 function buildLabelButtons() {
   if (!labelButtons) return;
   labelButtons.innerHTML = "";
@@ -1925,16 +1947,117 @@ function buildLabelButtons() {
       btn.type = "button";
       btn.className = `label-btn kb-row-${rowIndex}`;
       btn.dataset.label = label.id;
-      btn.textContent = `${label.display.toUpperCase()} (${formatLabelKey(label.key)})`;
+      btn.textContent = `${label.display.toUpperCase()} (${formatLabelKey(labelShortcut(label.id))})`;
       btn.title = `${label.display} — ${label.id}`;
       btn.addEventListener("click", () => annotate(label.id));
       labelButtons.appendChild(btn);
     });
   });
+  buildShortcutEditor();
 }
 
 function rebuildLabelUi() {
   buildLabelButtons();
+}
+
+function buildShortcutEditor() {
+  if (!labelButtons || !LABELS.length) return;
+  const panel = document.createElement("details");
+  panel.className = "shortcut-editor";
+  panel.innerHTML = `
+    <summary>Customize shortcuts</summary>
+    <div class="shortcut-editor-grid"></div>
+    <div class="shortcut-editor-actions">
+      <button type="button" class="small-btn" data-shortcut-save>Save shortcuts</button>
+      <button type="button" class="small-btn" data-shortcut-reset>Reset defaults</button>
+      <span class="shortcut-editor-status" role="status"></span>
+    </div>
+  `;
+  const grid = panel.querySelector(".shortcut-editor-grid");
+  LABELS.forEach((label) => {
+    const row = document.createElement("label");
+    row.className = "shortcut-editor-row";
+    row.innerHTML = `
+      <span>${label.display}</span>
+      <input type="text" maxlength="1" value="${labelShortcut(label.id)}" data-shortcut-label="${label.id}" aria-label="${label.display} shortcut" />
+    `;
+    grid.appendChild(row);
+  });
+  panel.querySelector("[data-shortcut-save]").addEventListener("click", () => saveShortcutEditor(panel));
+  panel.querySelector("[data-shortcut-reset]").addEventListener("click", () => resetShortcutEditor(panel));
+  panel.addEventListener("input", (e) => {
+    const input = e.target.closest("[data-shortcut-label]");
+    if (!input) return;
+    input.value = normalizeShortcutKey(input.value);
+    setShortcutEditorStatus(panel, "");
+  });
+  labelButtons.appendChild(panel);
+}
+
+function shortcutEditorValues(panel) {
+  const values = {};
+  panel.querySelectorAll("[data-shortcut-label]").forEach((input) => {
+    values[input.dataset.shortcutLabel] = normalizeShortcutKey(input.value);
+  });
+  return values;
+}
+
+function validateShortcutEditor(values) {
+  const used = new Map();
+  for (const label of LABELS) {
+    const key = values[label.id];
+    if (!key) return `${label.display} needs one letter or digit.`;
+    if (used.has(key)) {
+      return `${formatLabelKey(key)} is already used by ${used.get(key)}.`;
+    }
+    used.set(key, label.display);
+  }
+  return "";
+}
+
+function setShortcutEditorStatus(panel, message, isError = false) {
+  const status = panel.querySelector(".shortcut-editor-status");
+  if (!status) return;
+  status.textContent = message;
+  status.classList.toggle("error", isError);
+}
+
+async function saveShortcutEditor(panel) {
+  const shortcuts = shortcutEditorValues(panel);
+  const error = validateShortcutEditor(shortcuts);
+  if (error) {
+    setShortcutEditorStatus(panel, error, true);
+    return;
+  }
+  setShortcutEditorStatus(panel, "Saving...");
+  try {
+    const res = await apiFetch("/api/label-shortcuts", {
+      method: "PUT",
+      body: JSON.stringify({ shortcuts }),
+    });
+    if (!res.ok) throw new Error("Shortcut save failed");
+    const data = await res.json();
+    applyLabelShortcuts(data.shortcuts || shortcuts);
+    rebuildLabelUi();
+  } catch {
+    setShortcutEditorStatus(panel, "Could not save shortcuts.", true);
+  }
+}
+
+async function resetShortcutEditor(panel) {
+  setShortcutEditorStatus(panel, "Saving...");
+  try {
+    const res = await apiFetch("/api/label-shortcuts", {
+      method: "PUT",
+      body: JSON.stringify({ shortcuts: defaultLabelShortcuts }),
+    });
+    if (!res.ok) throw new Error("Shortcut reset failed");
+    const data = await res.json();
+    applyLabelShortcuts(data.shortcuts || defaultLabelShortcuts);
+    rebuildLabelUi();
+  } catch {
+    setShortcutEditorStatus(panel, "Could not reset shortcuts.", true);
+  }
 }
 
 function showOverlay(labelId, frame) {
