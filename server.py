@@ -151,7 +151,7 @@ PRACTICE_INTERVAL_SEC = 30
 API_CALL_INTERVAL_SEC = int(os.getenv("API_CALL_INTERVAL_SEC", "3600"))
 _next_api_call_at: float | None = None
 # Segment proxy encode: 480x270, 25 fps, H.264 ultrafast
-SEGMENT_SCALE_FILTER = "scale=480:270"
+SEGMENT_SCALE_FILTER = "scale=960:540"
 SEGMENT_FPS = 25
 SEGMENT_CRF = 28
 SEGMENT_FFMPEG_PRESET = "ultrafast"
@@ -1527,15 +1527,8 @@ async def split_video_segment(src: Path, dest: Path, start: float, duration: flo
         str(src),
         "-t",
         str(duration),
-        "-c:v",
-        "libx264",
-        "-preset",
-        SEGMENT_FFMPEG_PRESET,
-        "-crf",
-        str(SEGMENT_CRF),
-        "-vf",
-        f"{SEGMENT_SCALE_FILTER},fps={SEGMENT_FPS}",
-        "-an",
+        "-c",
+        "copy",
         "-movflags",
         "+faststart",
         str(dest),
