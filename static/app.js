@@ -1607,6 +1607,14 @@ function serverVideoApiPath(videoId) {
   return `/api/video/${encodeURIComponent(videoId)}`;
 }
 
+function annotateJobVideoUrl(data, videoId) {
+  const index = data.annotator_index ?? 1;
+  if (index === 1 && data.original_video_url) {
+    return data.original_video_url;
+  }
+  return null;
+}
+
 function stopVideoPoll() {
   if (videoPollAbort) {
     videoPollAbort.aborted = true;
@@ -2570,10 +2578,15 @@ async function startAnnotatorJob(data) {
   if (!videoId) return;
 
   const secondsLeft = jobSecondsLeft(data);
+  const directVideoUrl = annotateJobVideoUrl(data, videoId);
 
   if (data.job_id === loadedVideoJobId && video.src) {
-    const expected = serverVideoApiPath(videoId);
-    if (video.src.includes(encodeURIComponent(videoId)) || video.src.includes(videoId)) {
+    const expected = directVideoUrl || serverVideoApiPath(videoId);
+    if (
+      sameVideoUrl(video.src, expected) ||
+      video.src.includes(encodeURIComponent(videoId)) ||
+      video.src.includes(videoId)
+    ) {
       return;
     }
   }
@@ -2604,12 +2617,14 @@ async function startAnnotatorJob(data) {
       ? "Practice round"
       : "Job active";
   if (jobInfo) {
-    jobInfo.textContent = `${prefix} · waiting for video ${videoId}… · ${index}/${total}`;
+    jobInfo.textContent = directVideoUrl
+      ? `${prefix} · loading original video… · ${index}/${total}`
+      : `${prefix} · waiting for video ${videoId}… · ${index}/${total}`;
   }
 
   showVideoReady();
   video.pause();
-  const url = await waitForServerVideo(videoId, secondsLeft);
+  const url = directVideoUrl || (await waitForServerVideo(videoId, secondsLeft));
   if (!url) {
     setStatusMessage(`Video not ready before deadline (${videoId})`, jobInfo);
     hideVideoReady();

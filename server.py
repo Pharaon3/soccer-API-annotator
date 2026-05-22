@@ -1014,6 +1014,7 @@ class ConnectionManager:
             "job_id": job.job_id,
             "video_id": playback_video_id,
             "original_video_id": job.video_id,
+            "original_video_url": job.video_url,
             "video_file": public_video_path(job.video_id),
             "source_url": job.video_url,
             "annotator_id": session.annotator_id,
@@ -1115,17 +1116,6 @@ class ConnectionManager:
         """Notify each annotator as soon as their file is ready (no wait for all encodes)."""
         x = job.segment_total
         video_id = job.video_id
-
-        rank_one = {r for r in job.rank_by_participant_id.values() if r == 1}
-        if rank_one:
-            await self.notify_annotate_ranks(job, rank_one)
-        elif x >= 1:
-            logger.warning(
-                "dispatch: no rank-1 annotator job=%s map=%s total=%d",
-                job.job_id,
-                job.rank_by_participant_id,
-                x,
-            )
 
         segment_ranks = [rank for rank in range(2, x + 1)]
 
@@ -1715,6 +1705,7 @@ async def run_annotate_job(
     job_events[job_id] = []
 
     logger.info("Annotate job %s started video_id=%s annotators=%d", job_id, video_id, x)
+    await manager.notify_annotate_ranks(job, {1})
 
     try:
         return await _run_annotate_job_body(
