@@ -12,6 +12,7 @@ const API_NEXT_WARN_1_MIN_SEC = 60;
 const VIDEO_POLL_INTERVAL_MS = 2000;
 const ANNOTATOR_POST_DEADLINE_KEEP_MS = 60 * 1000;
 const DEFAULT_PRESENCE_IDLE_MINUTES = 15;
+const DEFAULT_EVENT_CANDIDATE_SNAP_RANGE_FRAMES = 5;
 const PRESENCE_ACTIVE_RECHECK_MS = 30 * 1000;
 const PAGE = document.body.dataset.page || "";
 const IS_PRACTICE_PAGE = PAGE === "practice" || PAGE === "train";
@@ -199,6 +200,8 @@ let loadedVideoJobId = null;
 let videoPollAbort = null;
 let annotationsLocked = false;
 let selectedEventId = null;
+let eventCandidateFrames = [];
+let eventCandidateSnapRangeFrames = DEFAULT_EVENT_CANDIDATE_SNAP_RANGE_FRAMES;
 
 const EVENT_DELETE_ICON = `<svg class="event-delete-icon" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M6 7h12v12a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V7zm3-4h6l1 1h4v2H4V4h4l1-1zM9 9v9h2V9H9zm4 0v9h2V9h-2z"/></svg>`;
 
@@ -218,6 +221,10 @@ async function loadLabelConfig() {
     Object.entries(currentLabelShortcuts).map(([labelId, key]) => [key, labelId])
   );
   labelFrameOffsets = data.frame_offsets || {};
+  eventCandidateSnapRangeFrames =
+    Number.isFinite(Number(data.event_candidate_snap_range_frames))
+      ? Math.max(0, Math.floor(Number(data.event_candidate_snap_range_frames)))
+      : DEFAULT_EVENT_CANDIDATE_SNAP_RANGE_FRAMES;
 }
 
 function participantColor(participantId) {
@@ -559,8 +566,11 @@ function replaceSelectedEventLabel(labelId) {
   }
   const oldLabel = ev.label;
   const oldTimeSec = ev.time_sec;
-  const time_sec = ev.time_sec;
-  const frame = ev.frame ?? timeToFrame(time_sec);
+  const oldUid = ev.uid;
+  const currentFrame = ev.frame ?? timeToFrame(ev.time_sec);
+  const candidateFrame = nearestEventCandidateFrame(currentFrame);
+  const frame = candidateFrame ?? currentFrame;
+  const time_sec = roundTimeSec(frameToTime(frame));
   const pid = myParticipantId ?? 0;
   ev.label = labelId;
   ev.time_sec = time_sec;
@@ -576,7 +586,7 @@ function replaceSelectedEventLabel(labelId) {
     job_id: currentJobId,
     time_sec: oldTimeSec,
     label: oldLabel,
-    uid: `p${pid}-${roundTimeSec(oldTimeSec)}-${oldLabel}`,
+    uid: oldUid || `p${pid}-${roundTimeSec(oldTimeSec)}-${oldLabel}`,
   });
   send({
     type: "annotation",
@@ -894,9 +904,41 @@ function frameToTime(frame) {
 function annotationPointForLabel(labelId, timeSec) {
   const frame = timeToFrame(timeSec);
   const adjustedFrame = Math.max(0, frame - (Number(labelFrameOffsets[labelId]) || 0));
+  const candidateFrame = nearestEventCandidateFrame(adjustedFrame);
+  if (candidateFrame != null) {
+    return {
+      time_sec: roundTimeSec(frameToTime(candidateFrame)),
+      frame: candidateFrame,
+    };
+  }
   return {
-    time_sec: frameToTime(adjustedFrame),
+    time_sec: roundTimeSec(frameToTime(adjustedFrame)),
     frame: adjustedFrame,
+  };
+}
+
+function nearestEventCandidateFrame(frame) {
+  if (!eventCandidateFrames.length) return null;
+  let nearest = null;
+  let nearestDistance = Infinity;
+  eventCandidateFrames.forEach((candidateFrame) => {
+    const distance = Math.abs(candidateFrame - frame);
+    if (distance < nearestDistance) {
+      nearest = candidateFrame;
+      nearestDistance = distance;
+    }
+  });
+  return nearestDistance <= eventCandidateSnapRangeFrames ? nearest : null;
+}
+
+function eventWithFrame(event, frame) {
+  const pid = event.participant_id ?? myParticipantId ?? 0;
+  const timeSec = roundTimeSec(frameToTime(frame));
+  return {
+    ...event,
+    frame,
+    time_sec: timeSec,
+    uid: `p${pid}-${timeSec}-${event.label}`,
   };
 }
 
@@ -1698,7 +1740,8 @@ function showTimelineMarkerTooltipFor(marker, timelineEl, tip) {
   const timeSec = Number(marker.dataset.time);
   const timeText = Number.isFinite(timeSec) ? `${timeSec.toFixed(2)}s` : "—";
   const who = marker.dataset.who || "";
-  const color = marker.style.background || LABEL_COLORS[marker.dataset.label] || "#94a3b8";
+  const color =
+    marker.dataset.markerColor || LABEL_COLORS[marker.dataset.label] || "#94a3b8";
 
   tip.style.setProperty("--tooltip-accent", color);
   tip.innerHTML = `
@@ -1757,7 +1800,7 @@ function renderTimelineMarkers() {
     .slice()
     .filter((e) => e.participant_id === minePid)
     .sort((a, b) => a.time_sec - b.time_sec);
-  timelineMarkers.innerHTML = sorted
+  const eventMarkers = sorted
     .map((e, i) => {
       const pct = Math.min(
         100,
@@ -1768,9 +1811,78 @@ function renderTimelineMarkers() {
       const labelName = labelDisplayName(e.label);
       const who = mine ? "You" : `Annotator #${e.participant_id}`;
       const stackY = markerStackOffsetAtFrame(sorted, i);
-      return `<button type="button" class="timeline-marker${mine ? " mine" : ""}" data-time="${e.time_sec}" data-frame="${e.frame}" data-label="${e.label}" data-label-name="${labelName}" data-who="${who}" data-event-id="${e.id ?? ""}" style="left:${pct}%;background:${color};--stack-y:${stackY}px" aria-label="${labelName}, frame ${e.frame}"></button>`;
+      return `<button type="button" class="timeline-marker${mine ? " mine" : ""}" data-time="${e.time_sec}" data-frame="${e.frame}" data-label="${e.label}" data-label-name="${labelName}" data-who="${who}" data-event-id="${e.id ?? ""}" data-marker-color="${color}" style="left:${pct}%;background:${color};--stack-y:${stackY}px" aria-label="${labelName}, frame ${e.frame}"></button>`;
     })
     .join("");
+  const candidateMarkers = eventCandidateFrames
+    .filter((frame) => {
+      const timeSec = frameToTime(frame);
+      return timeSec >= jobPlayGlobalStart - 0.001 && timeSec <= jobPlayGlobalEnd + 0.001;
+    })
+    .map((frame) => {
+      const timeSec = frameToTime(frame);
+      const pct = Math.min(
+        100,
+        Math.max(0, ((timeSec - jobPlayGlobalStart) / timelineSec) * 100)
+      );
+      return `<button type="button" class="timeline-marker timeline-candidate-marker" data-time="${timeSec}" data-frame="${frame}" data-label-name="Candidate event frame" data-who="Candidate" data-marker-color="#22d3ee" style="left:${pct}%;" aria-label="Candidate event frame ${frame}"></button>`;
+    })
+    .join("");
+  timelineMarkers.innerHTML = candidateMarkers + eventMarkers;
+}
+
+function applyEventFrameCandidates(data) {
+  if (data.job_id && data.job_id !== currentJobId) return;
+  const frames = Array.isArray(data.frames) ? data.frames : [];
+  eventCandidateFrames = normalizeEventCandidateFrames(frames);
+  retargetMyEventsToCandidates();
+  renderTimelineMarkers();
+}
+
+function normalizeEventCandidateFrames(frames) {
+  return Array.from(
+    new Set(
+      (frames || [])
+        .map((frame) => Math.floor(Number(frame)))
+        .filter((frame) => Number.isFinite(frame) && frame >= 0)
+    )
+  ).sort((a, b) => a - b);
+}
+
+function retargetMyEventsToCandidates() {
+  if (!eventCandidateFrames.length || !canEditAnnotations()) return;
+  const minePid = myParticipantId ?? 0;
+  const moves = [];
+  jobEvents = jobEvents.map((event) => {
+    if (event.participant_id !== minePid) return event;
+    const frame = event.frame ?? timeToFrame(event.time_sec);
+    const candidateFrame = nearestEventCandidateFrame(frame);
+    if (candidateFrame == null || candidateFrame === frame) return event;
+    const adjusted = eventWithFrame(event, candidateFrame);
+    moves.push({ before: event, after: adjusted });
+    return adjusted;
+  });
+  if (!moves.length) return;
+  sessionEvents = jobEvents.filter((x) => x.participant_id === myParticipantId);
+  renderSessionEvents();
+  if (isLocalPractice()) return;
+  moves.forEach(({ before, after }) => {
+    send({
+      type: "annotation_remove",
+      job_id: currentJobId,
+      time_sec: before.time_sec,
+      label: before.label,
+      uid: before.uid,
+    });
+    send({
+      type: "annotation",
+      job_id: currentJobId,
+      label: after.label,
+      time_sec: after.time_sec,
+      frame: after.frame,
+      labeled_time_sec: after.labeled_time_sec ?? before.labeled_time_sec ?? before.time_sec,
+    });
+  });
 }
 
 function handleJobEvent(data) {
@@ -1897,6 +2009,7 @@ function clearAnnotatorVideo(showNextTimer = false) {
   currentJobId = null;
   loadedVideoJobId = null;
   pendingApiVideoId = null;
+  eventCandidateFrames = [];
   updateAnnotatorInteractionState();
   if (showNextTimer) showApiNextIdle();
 }
@@ -2315,6 +2428,7 @@ async function startAnnotatorJob(data) {
   sessionEvents = [];
   selectedEventId = null;
   nextEventId = 0;
+  eventCandidateFrames = normalizeEventCandidateFrames(data.candidate_frames);
   applyJobTiming(data);
   if (data.annotator_id != null) myParticipantId = data.annotator_id;
   renderSessionEvents();
@@ -2386,6 +2500,7 @@ async function startDirectPracticeJob(data) {
   sessionEvents = [];
   selectedEventId = null;
   nextEventId = 0;
+  eventCandidateFrames = [];
   applyJobTiming(data);
   myParticipantId = myParticipantId ?? 1;
   renderSessionEvents();
@@ -2432,6 +2547,7 @@ function handleAnnotateStart(data) {
     loadedVideoJobId = null;
     pendingApiVideoId = null;
     pendingAnnotateJob = null;
+    eventCandidateFrames = [];
     stopApiCountdown(true);
     hideVideoReady();
     showApiNextIdle();
@@ -2453,6 +2569,7 @@ function handleDuplicateCacheHit(data) {
   jobEvents = [];
   sessionEvents = [];
   selectedEventId = null;
+  eventCandidateFrames = [];
   renderSessionEvents();
   renderTimelineMarkers();
   clearAnnotatorVideo(false);
@@ -2520,6 +2637,7 @@ function resetPracticeJob() {
   jobEvents = [];
   sessionEvents = [];
   selectedEventId = null;
+  eventCandidateFrames = [];
   renderSessionEvents();
   renderTimelineMarkers();
   clearAnnotatorVideo(false);
@@ -2763,6 +2881,9 @@ function handleMessage(data) {
       break;
     case "job_event":
       handleJobEvent(data);
+      break;
+    case "event_frame_candidates":
+      applyEventFrameCandidates(data);
       break;
     case "test_start":
       if (IS_PRACTICE_PAGE) handleTestStart(data);

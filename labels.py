@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 LABEL_CONFIG: list[dict[str, str]] = [
     {"id": "pass", "key": "q", "display": "Pass"},
@@ -31,6 +34,7 @@ LABEL_KEYBOARD_ROWS: list[list[str]] = [
 
 LABELS: list[str] = [entry["id"] for entry in LABEL_CONFIG]
 LABEL_IDS: frozenset[str] = frozenset(LABELS)
+DEFAULT_EVENT_CANDIDATE_SNAP_RANGE_FRAMES = 5
 
 
 def _offset_env_name(label_id: str) -> str:
@@ -53,9 +57,26 @@ def label_frame_offsets() -> dict[str, int]:
     return offsets
 
 
+def event_candidate_snap_range_frames() -> int:
+    raw = os.getenv("EVENT_CANDIDATE_SNAP_RANGE_FRAMES")
+    if raw is None or raw.strip() == "":
+        return DEFAULT_EVENT_CANDIDATE_SNAP_RANGE_FRAMES
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid EVENT_CANDIDATE_SNAP_RANGE_FRAMES=%r, using default %d",
+            raw,
+            DEFAULT_EVENT_CANDIDATE_SNAP_RANGE_FRAMES,
+        )
+        return DEFAULT_EVENT_CANDIDATE_SNAP_RANGE_FRAMES
+    return max(0, value)
+
+
 def labels_api_payload() -> dict[str, Any]:
     return {
         "labels": LABEL_CONFIG,
         "keyboard_rows": LABEL_KEYBOARD_ROWS,
         "frame_offsets": label_frame_offsets(),
+        "event_candidate_snap_range_frames": event_candidate_snap_range_frames(),
     }

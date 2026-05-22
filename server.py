@@ -461,8 +461,13 @@ def annotations_detail_payload(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def _remove_annotation_event(
-    events: list[dict[str, Any]], time_sec: float, label: str
+    events: list[dict[str, Any]], time_sec: float, label: str, uid: str | None = None
 ) -> bool:
+    if uid:
+        for i, event in enumerate(events):
+            if event.get("uid") == uid:
+                events.pop(i)
+                return True
     target_t = round(float(time_sec), 2)
     for i, event in enumerate(events):
         if event.get("time_sec") == target_t and event.get("label") == label:
@@ -515,6 +520,7 @@ class ActiveJob:
     segment_total: int = 1
     rank_by_participant_id: dict[int, int] = field(default_factory=dict)
     dispatch_session_ids: list[int] = field(default_factory=list)
+    candidate_frames: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -569,6 +575,16 @@ class TestJobState:
 
 class AnnotateRequest(BaseModel):
     video_url: HttpUrl
+
+
+class EventFrameCandidatesRequest(BaseModel):
+    video_url: HttpUrl | None = None
+    video_id: str | None = Field(default=None, min_length=1)
+    job_id: str | None = Field(default=None, min_length=1)
+    frames: list[Any] = Field(default_factory=list)
+    event_frame_candidate_array: list[Any] = Field(default_factory=list)
+    frame_candidate_array: list[Any] = Field(default_factory=list)
+    candidates: list[Any] = Field(default_factory=list)
 
 
 class LoginRequest(BaseModel):
@@ -1006,6 +1022,7 @@ class ConnectionManager:
             "segment_window_sec": SEGMENT_WINDOW_SEC,
             "duration_sec": round(job.duration_sec, 2),
             "seconds_left": job_seconds_left(job.deadline_at, job.duration_sec),
+            "candidate_frames": job.candidate_frames,
             **timing,
         }
 
@@ -1165,6 +1182,17 @@ class ConnectionManager:
                     }
                 )
             )
+        if job.candidate_frames:
+            await session.websocket.send_text(
+                json.dumps(
+                    {
+                        "type": "event_frame_candidates",
+                        "job_id": job_id,
+                        "video_id": job.video_id,
+                        "frames": job.candidate_frames,
+                    }
+                )
+            )
 
     def _test_start_payload(
         self,
@@ -1295,6 +1323,31 @@ class ConnectionManager:
             for aid in dead:
                 await self._drop_participant(aid)
 
+    async def broadcast_event_frame_candidates(
+        self, job: ActiveJob, frames: list[int]
+    ) -> int:
+        msg = json.dumps(
+            {
+                "type": "event_frame_candidates",
+                "job_id": job.job_id,
+                "video_id": job.video_id,
+                "frames": frames,
+            }
+        )
+        delivered = 0
+        dead: list[int] = []
+        for session in list(self.annotators.values()):
+            if not session.online:
+                continue
+            try:
+                await session.websocket.send_text(msg)
+                delivered += 1
+            except Exception:
+                dead.append(session.annotator_id)
+        for aid in dead:
+            await self._drop_participant(aid)
+        return delivered
+
     async def notify_duplicate_cache_hit(
         self,
         *,
@@ -1349,6 +1402,37 @@ active_test_jobs: set[str] = set()
 test_job_events: dict[str, list[dict[str, Any]]] = {}
 test_job_states: dict[str, TestJobState] = {}
 last_annotate_timing: JobVideoTiming | None = None
+
+
+def normalize_candidate_frames(frames: list[int]) -> list[int]:
+    normalized: set[int] = set()
+    for frame in frames:
+        try:
+            value = int(frame)
+        except (TypeError, ValueError):
+            continue
+        if value >= 0:
+            normalized.add(value)
+    return sorted(normalized)
+
+
+def active_job_for_candidates(body: EventFrameCandidatesRequest) -> ActiveJob | None:
+    if body.job_id:
+        return active_jobs.get(body.job_id)
+    video_id = body.video_id
+    if not video_id and body.video_url:
+        try:
+            video_id = video_id_from_url(str(body.video_url))
+        except ValueError:
+            return None
+    jobs = [
+        job
+        for job in active_jobs.values()
+        if not video_id or job.video_id == video_id
+    ]
+    if not jobs:
+        return None
+    return max(jobs, key=lambda job: job.started_at)
 
 
 def cache_paths(video_id: str) -> tuple[Path, Path, Path]:
@@ -2051,6 +2135,46 @@ async def annotate(
     return JSONResponse(content=result, headers=headers)
 
 
+@app.post("/api/event_frame_candidates")
+async def event_frame_candidates(
+    body: EventFrameCandidatesRequest,
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
+) -> dict[str, Any]:
+    if not verify_api_key(x_api_key):
+        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
+
+    raw_frames = (
+        body.frames
+        or body.event_frame_candidate_array
+        or body.frame_candidate_array
+        or body.candidates
+    )
+    frames = normalize_candidate_frames(raw_frames)
+    if not frames:
+        raise HTTPException(status_code=400, detail="frames must contain at least one frame")
+
+    job = active_job_for_candidates(body)
+    if job is None:
+        raise HTTPException(status_code=404, detail="No active annotation job found")
+
+    job.candidate_frames = frames
+    delivered = await manager.broadcast_event_frame_candidates(job, frames)
+    logger.info(
+        "Event frame candidates received job=%s video_id=%s frames=%d delivered=%d",
+        job.job_id,
+        job.video_id,
+        len(frames),
+        delivered,
+    )
+    return {
+        "ok": True,
+        "job_id": job.job_id,
+        "video_id": job.video_id,
+        "frames": frames,
+        "delivered": delivered,
+    }
+
+
 def _list_videos_data() -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for meta_file in ANNOTATIONS_DIR.glob("*.meta.json"):
@@ -2393,7 +2517,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 if role == "test":
                     if job_id in test_job_events:
                         _remove_annotation_event(
-                            test_job_events[job_id], time_sec, label
+                            test_job_events[job_id], time_sec, label, uid
                         )
                     await manager.broadcast_job_event(
                         job_id,
@@ -2407,7 +2531,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         test_only=True,
                     )
                 elif job_id in job_events:
-                    _remove_annotation_event(job_events[job_id], time_sec, label)
+                    _remove_annotation_event(job_events[job_id], time_sec, label, uid)
                     await manager.broadcast_job_event(
                         job_id,
                         {
