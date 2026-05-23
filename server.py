@@ -155,6 +155,7 @@ SEGMENT_SCALE_FILTER = "scale=960:540"
 SEGMENT_FPS = 25
 SEGMENT_CRF = 28
 SEGMENT_FFMPEG_PRESET = "ultrafast"
+NGINX_VIDEO_ACCEL_PREFIX = os.getenv("NGINX_VIDEO_ACCEL_PREFIX", "").strip().rstrip("/")
 
 
 def segment_core_bounds(rank: int, total: int) -> tuple[float, float]:
@@ -2449,12 +2450,19 @@ async def list_videos(request: Request) -> list[dict[str, Any]]:
 
 
 @app.get("/api/video/{video_id}")
-async def get_public_video(video_id: str) -> FileResponse:
+async def get_public_video(video_id: str) -> Response:
     if not safe_video_id(video_id):
         raise HTTPException(status_code=400, detail="Invalid video id")
     path = VIDEOS_DIR / f"{video_id}.mp4"
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Video not found")
+    if NGINX_VIDEO_ACCEL_PREFIX:
+        return Response(
+            headers={
+                "X-Accel-Redirect": f"{NGINX_VIDEO_ACCEL_PREFIX}/{path.name}",
+                "Content-Type": "video/mp4",
+            }
+        )
     return FileResponse(path, media_type="video/mp4")
 
 

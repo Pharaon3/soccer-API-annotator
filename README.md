@@ -42,6 +42,7 @@ Open http://localhost:8080 and log in with a configured user ID and password.
 | `ANNOTATE_DURATION_MAX_SEC` | Maximum annotator/API response window in seconds (default `26`) |
 | `CACHE_HIT_RESPONSE_DELAY_MIN_SEC` | Minimum cache-hit response delay in seconds (default = `ANNOTATE_DURATION_MIN_SEC`) |
 | `CACHE_HIT_RESPONSE_DELAY_MAX_SEC` | Maximum cache-hit response delay in seconds (default = `ANNOTATE_DURATION_MAX_SEC`) |
+| `NGINX_VIDEO_ACCEL_PREFIX` | Optional internal nginx location prefix for offloading `/api/video/{video-id}` file transfer, for example `/protected-videos` |
 
 Example `.env` users (edit IDs and passwords):
 
@@ -128,5 +129,52 @@ uvicorn server:app --host 0.0.0.0 --port 8080 --workers 1
 ```
 
 Use a reverse proxy (nginx, Caddy) for HTTPS. WebSocket path: `/ws`.
+
+### Nginx Video Offload
+
+FastAPI can validate `GET /api/video/{video-id}` and let nginx stream the actual `.mp4` file. Enable it with:
+
+```bash
+export NGINX_VIDEO_ACCEL_PREFIX=/protected-videos
+```
+
+Example nginx server:
+
+```nginx
+server {
+    listen 80;
+    server_name your-domain.example;
+
+    client_max_body_size 20m;
+
+    location /protected-videos/ {
+        internal;
+        alias /absolute/path/to/annotator-event-version/data/videos/;
+        add_header Accept-Ranges bytes;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location /ws {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Replace the `alias` path with this repository's absolute `data/videos/` path on Ubuntu. The public browser URL stays `/api/video/{video-id}`; `/protected-videos/` is internal and cannot be opened directly.
 
 `POST /api/auth/verify` remains as a deprecated alias for `/api/auth/login`.
