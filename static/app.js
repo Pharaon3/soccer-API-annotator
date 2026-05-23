@@ -11,7 +11,7 @@ const API_RESPONSE_FALLBACK_SEC = 26;
 const API_CALL_INTERVAL_SEC = 3600;
 const API_NEXT_WARN_5_MIN_SEC = 5 * 60;
 const API_NEXT_WARN_1_MIN_SEC = 60;
-const VIDEO_POLL_INTERVAL_MS = 2000;
+const VIDEO_POLL_INTERVAL_MS = 500;
 const ANNOTATOR_POST_DEADLINE_KEEP_MS = 60 * 1000;
 const DEFAULT_PRESENCE_IDLE_MINUTES = 15;
 const DEFAULT_EVENT_CANDIDATE_SNAP_RANGE_FRAMES = 5;
@@ -47,6 +47,16 @@ const DEFAULT_LABEL_KEYBOARD_ROWS = [
   ["aerial_duel", "save", "shot", "foul", "goal"],
   ["interception", "substitution", "clearance", "block", "ball_out_of_play"],
 ];
+const DEFAULT_CONTROL_SHORTCUTS = {
+  seek_left: "ArrowLeft",
+  seek_right: "ArrowRight",
+  recent_event: "0",
+};
+const CONTROL_SHORTCUTS = [
+  { id: "seek_left", display: "Move left" },
+  { id: "seek_right", display: "Move right" },
+  { id: "recent_event", display: "Go to most recent event" },
+];
 
 let LABELS = [];
 let labelKeyboardRows = DEFAULT_LABEL_KEYBOARD_ROWS;
@@ -54,6 +64,9 @@ let keyToLabel = {};
 let labelFrameOffsets = {};
 let defaultLabelShortcuts = {};
 let currentLabelShortcuts = {};
+let defaultControlShortcuts = { ...DEFAULT_CONTROL_SHORTCUTS };
+let currentControlShortcuts = { ...DEFAULT_CONTROL_SHORTCUTS };
+let keyToControlShortcut = {};
 
 const roleScreen = document.getElementById("role-screen");
 const annotatorScreen = document.getElementById("annotator-screen");
@@ -228,10 +241,8 @@ async function loadLabelConfig() {
   LABELS = data.labels || [];
   labelKeyboardRows = data.keyboard_rows || DEFAULT_LABEL_KEYBOARD_ROWS;
   defaultLabelShortcuts = Object.fromEntries(LABELS.map((l) => [l.id, l.key]));
-  currentLabelShortcuts = { ...defaultLabelShortcuts, ...(data.shortcuts || {}) };
-  keyToLabel = Object.fromEntries(
-    Object.entries(currentLabelShortcuts).map(([labelId, key]) => [key, labelId])
-  );
+  defaultControlShortcuts = { ...DEFAULT_CONTROL_SHORTCUTS, ...(data.control_defaults || {}) };
+  applyShortcuts(data.shortcuts || {}, data.control_shortcuts || {});
   labelFrameOffsets = data.frame_offsets || {};
   eventCandidateSnapRangeFrames =
     Number.isFinite(Number(data.event_candidate_snap_range_frames))
@@ -1672,7 +1683,7 @@ function waitForServerVideo(videoId, secondsLeft = API_RESPONSE_FALLBACK_SEC) {
     };
 
     callVideoApi();
-    const interval = setInterval(callVideoApi, 2000);
+    const interval = setInterval(callVideoApi, VIDEO_POLL_INTERVAL_MS);
 
     const totalTimeout = setTimeout(() => {
       stop(null);
@@ -2203,15 +2214,39 @@ function normalizeShortcutKey(key) {
   return /^[a-z0-9]$/.test(value) ? value : "";
 }
 
-function applyLabelShortcuts(shortcuts) {
+function shortcutEventKey(e) {
+  return e.key.length === 1 ? e.key.toLowerCase() : e.key;
+}
+
+function normalizeControlShortcutKey(key) {
+  const value = String(key || "").trim();
+  const lower = value.toLowerCase();
+  if (/^[a-z0-9]$/.test(lower)) return lower;
+  if (lower === "arrowleft") return "ArrowLeft";
+  if (lower === "arrowright") return "ArrowRight";
+  return "";
+}
+
+function applyShortcuts(shortcuts, controlShortcuts) {
   currentLabelShortcuts = { ...defaultLabelShortcuts, ...(shortcuts || {}) };
   keyToLabel = Object.fromEntries(
     Object.entries(currentLabelShortcuts).map(([labelId, key]) => [key, labelId])
+  );
+  currentControlShortcuts = {
+    ...defaultControlShortcuts,
+    ...(controlShortcuts || {}),
+  };
+  keyToControlShortcut = Object.fromEntries(
+    Object.entries(currentControlShortcuts).map(([actionId, key]) => [key, actionId])
   );
 }
 
 function labelShortcut(labelId) {
   return currentLabelShortcuts[labelId] || defaultLabelShortcuts[labelId] || "";
+}
+
+function controlShortcut(actionId) {
+  return currentControlShortcuts[actionId] || defaultControlShortcuts[actionId] || "";
 }
 
 function buildLabelButtons() {
@@ -2249,6 +2284,9 @@ function buildShortcutEditor() {
   panel.className = "shortcut-editor";
   panel.innerHTML = `
     <summary>Customize shortcuts</summary>
+    <div class="shortcut-editor-section">Controls</div>
+    <div class="shortcut-editor-grid" data-shortcut-controls></div>
+    <div class="shortcut-editor-section">Labels</div>
     <div class="shortcut-editor-grid"></div>
     <div class="shortcut-editor-actions">
       <button type="button" class="small-btn" data-shortcut-save>Save shortcuts</button>
@@ -2256,7 +2294,17 @@ function buildShortcutEditor() {
       <span class="shortcut-editor-status" role="status"></span>
     </div>
   `;
-  const grid = panel.querySelector(".shortcut-editor-grid");
+  const controlGrid = panel.querySelector("[data-shortcut-controls]");
+  CONTROL_SHORTCUTS.forEach((action) => {
+    const row = document.createElement("label");
+    row.className = "shortcut-editor-row";
+    row.innerHTML = `
+      <span>${action.display}</span>
+      <input type="text" value="${controlShortcut(action.id)}" data-shortcut-control="${action.id}" aria-label="${action.display} shortcut" />
+    `;
+    controlGrid.appendChild(row);
+  });
+  const grid = panel.querySelector(".shortcut-editor-grid:not([data-shortcut-controls])");
   LABELS.forEach((label) => {
     const row = document.createElement("label");
     row.className = "shortcut-editor-row";
@@ -2270,8 +2318,22 @@ function buildShortcutEditor() {
   panel.querySelector("[data-shortcut-reset]").addEventListener("click", () => resetShortcutEditor(panel));
   panel.addEventListener("input", (e) => {
     const input = e.target.closest("[data-shortcut-label]");
+    if (input) {
+      input.value = normalizeShortcutKey(input.value);
+      setShortcutEditorStatus(panel, "");
+      return;
+    }
+    const controlInput = e.target.closest("[data-shortcut-control]");
+    if (!controlInput) return;
+    controlInput.value = normalizeControlShortcutKey(controlInput.value);
+    setShortcutEditorStatus(panel, "");
+  });
+  panel.addEventListener("keydown", (e) => {
+    const input = e.target.closest("[data-shortcut-control]");
     if (!input) return;
-    input.value = normalizeShortcutKey(input.value);
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    input.value = e.key;
     setShortcutEditorStatus(panel, "");
   });
   labelButtons.appendChild(panel);
@@ -2285,7 +2347,15 @@ function shortcutEditorValues(panel) {
   return values;
 }
 
-function validateShortcutEditor(values) {
+function shortcutEditorControlValues(panel) {
+  const values = {};
+  panel.querySelectorAll("[data-shortcut-control]").forEach((input) => {
+    values[input.dataset.shortcutControl] = normalizeControlShortcutKey(input.value);
+  });
+  return values;
+}
+
+function validateShortcutEditor(values, controlValues) {
   const used = new Map();
   for (const label of LABELS) {
     const key = values[label.id];
@@ -2294,6 +2364,14 @@ function validateShortcutEditor(values) {
       return `${formatLabelKey(key)} is already used by ${used.get(key)}.`;
     }
     used.set(key, label.display);
+  }
+  for (const action of CONTROL_SHORTCUTS) {
+    const key = controlValues[action.id];
+    if (!key) return `${action.display} needs one key.`;
+    if (used.has(key)) {
+      return `${formatLabelKey(key)} is already used by ${used.get(key)}.`;
+    }
+    used.set(key, action.display);
   }
   return "";
 }
@@ -2307,7 +2385,8 @@ function setShortcutEditorStatus(panel, message, isError = false) {
 
 async function saveShortcutEditor(panel) {
   const shortcuts = shortcutEditorValues(panel);
-  const error = validateShortcutEditor(shortcuts);
+  const controlShortcuts = shortcutEditorControlValues(panel);
+  const error = validateShortcutEditor(shortcuts, controlShortcuts);
   if (error) {
     setShortcutEditorStatus(panel, error, true);
     return;
@@ -2316,11 +2395,11 @@ async function saveShortcutEditor(panel) {
   try {
     const res = await apiFetch("/api/label-shortcuts", {
       method: "PUT",
-      body: JSON.stringify({ shortcuts }),
+      body: JSON.stringify({ shortcuts, control_shortcuts: controlShortcuts }),
     });
     if (!res.ok) throw new Error("Shortcut save failed");
     const data = await res.json();
-    applyLabelShortcuts(data.shortcuts || shortcuts);
+    applyShortcuts(data.shortcuts || shortcuts, data.control_shortcuts || controlShortcuts);
     rebuildLabelUi();
   } catch {
     setShortcutEditorStatus(panel, "Could not save shortcuts.", true);
@@ -2332,11 +2411,17 @@ async function resetShortcutEditor(panel) {
   try {
     const res = await apiFetch("/api/label-shortcuts", {
       method: "PUT",
-      body: JSON.stringify({ shortcuts: defaultLabelShortcuts }),
+      body: JSON.stringify({
+        shortcuts: defaultLabelShortcuts,
+        control_shortcuts: defaultControlShortcuts,
+      }),
     });
     if (!res.ok) throw new Error("Shortcut reset failed");
     const data = await res.json();
-    applyLabelShortcuts(data.shortcuts || defaultLabelShortcuts);
+    applyShortcuts(
+      data.shortcuts || defaultLabelShortcuts,
+      data.control_shortcuts || defaultControlShortcuts
+    );
     rebuildLabelUi();
   } catch {
     setShortcutEditorStatus(panel, "Could not reset shortcuts.", true);
@@ -2422,6 +2507,13 @@ function selectedOrLatestMyEvent() {
     if (selected) return selected;
   }
   return latestMyEvent();
+}
+
+function seekToLatestMyEvent() {
+  const event = latestMyEvent();
+  if (!event) return false;
+  seekToFrame(event.frame ?? timeToFrame(event.time_sec));
+  return true;
 }
 
 function seekToFrame(frame) {
@@ -3201,18 +3293,34 @@ function handleAnnotatorKeydown(e) {
     return;
   }
 
-  if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
+  if (isAnnotatorShortcutBlocked(e)) return;
+  if (e.defaultPrevented) return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+  const key = shortcutEventKey(e);
+  const controlAction = keyToControlShortcut[key];
+  if (controlAction === "seek_left" || controlAction === "seek_right") {
+    e.preventDefault();
+    if (!e.repeat) startArrowHold(controlAction === "seek_left" ? -1 : 1);
+    return;
+  }
+  if (controlAction === "recent_event") {
+    if (seekToLatestMyEvent()) e.preventDefault();
+    return;
+  }
+
+  if (
+    !controlAction &&
+    (e.code === "ArrowLeft" || e.code === "ArrowRight") &&
+    !keyToControlShortcut.ArrowLeft &&
+    !keyToControlShortcut.ArrowRight
+  ) {
     if (isAnnotatorShortcutBlocked(e)) return;
     e.preventDefault();
     if (!e.repeat) startArrowHold(e.code === "ArrowLeft" ? -1 : 1);
     return;
   }
 
-  if (isAnnotatorShortcutBlocked(e)) return;
-  if (e.defaultPrevented) return;
-  if (e.ctrlKey || e.metaKey || e.altKey) return;
-
-  const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
   const labelId = keyToLabel[key];
   if (labelId) {
     e.preventDefault();
@@ -3222,7 +3330,14 @@ function handleAnnotatorKeydown(e) {
 
 function handleAnnotatorKeyup(e) {
   if (!isAnnotatingRole()) return;
-  if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
+  if (isAnnotatorShortcutBlocked(e)) return;
+  const key = shortcutEventKey(e);
+  const controlAction = keyToControlShortcut[key];
+  if (
+    controlAction === "seek_left" ||
+    controlAction === "seek_right" ||
+    (!controlAction && (e.code === "ArrowLeft" || e.code === "ArrowRight"))
+  ) {
     stopArrowHold();
   }
 }

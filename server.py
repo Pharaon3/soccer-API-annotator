@@ -243,6 +243,10 @@ def public_video_path(video_id: str) -> str:
 
 
 _SHORTCUT_KEY_RE = re.compile(r"^[a-z0-9]$")
+_CONTROL_SHORTCUT_KEYS = {
+    "arrowleft": "ArrowLeft",
+    "arrowright": "ArrowRight",
+}
 _SAFE_SETTINGS_USER_RE = re.compile(r"[^a-zA-Z0-9_.-]+")
 
 
@@ -250,6 +254,14 @@ def default_label_shortcuts() -> dict[str, str]:
     return {
         str(label["id"]): str(label["key"]).lower()
         for label in labels_api_payload()["labels"]
+    }
+
+
+def default_control_shortcuts() -> dict[str, str]:
+    return {
+        "seek_left": "ArrowLeft",
+        "seek_right": "ArrowRight",
+        "recent_event": "0",
     }
 
 
@@ -283,6 +295,40 @@ def validate_shortcuts(shortcuts: dict[str, str]) -> dict[str, str]:
     return {label_id: normalized.get(label_id, key) for label_id, key in defaults.items()}
 
 
+def normalize_control_shortcut_key(key: str, action_id: str) -> str:
+    value = str(key).strip()
+    lowered = value.lower()
+    if _SHORTCUT_KEY_RE.match(lowered):
+        return lowered
+    if lowered in _CONTROL_SHORTCUT_KEYS:
+        return _CONTROL_SHORTCUT_KEYS[lowered]
+    raise HTTPException(
+        status_code=400,
+        detail=f"Shortcut for {action_id} must be one letter, digit, or left/right arrow",
+    )
+
+
+def validate_control_shortcuts(
+    control_shortcuts: dict[str, str],
+    label_shortcuts: dict[str, str],
+) -> dict[str, str]:
+    defaults = default_control_shortcuts()
+    normalized: dict[str, str] = {}
+    used: dict[str, str] = {key: label_id for label_id, key in label_shortcuts.items()}
+    for action_id, key in control_shortcuts.items():
+        if action_id not in defaults:
+            raise HTTPException(status_code=400, detail=f"Unknown shortcut action: {action_id}")
+        value = normalize_control_shortcut_key(key, action_id)
+        if value in used:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Shortcut {value!r} is already used by {used[value]}",
+            )
+        normalized[action_id] = value
+        used[value] = action_id
+    return {action_id: normalized.get(action_id, key) for action_id, key in defaults.items()}
+
+
 def load_user_shortcuts(user_id: str) -> dict[str, str]:
     path = shortcut_settings_path(user_id)
     if not path.is_file():
@@ -302,14 +348,52 @@ def load_user_shortcuts(user_id: str) -> dict[str, str]:
         return default_label_shortcuts()
 
 
-def save_user_shortcuts(user_id: str, shortcuts: dict[str, str]) -> dict[str, str]:
+def load_user_control_shortcuts(user_id: str, label_shortcuts: dict[str, str]) -> dict[str, str]:
+    path = shortcut_settings_path(user_id)
+    if not path.is_file():
+        return default_control_shortcuts()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        logger.warning("Invalid shortcut settings for user %s; using defaults", user_id)
+        return default_control_shortcuts()
+    raw = payload.get("control_shortcuts") if isinstance(payload, dict) else None
+    if not isinstance(raw, dict):
+        try:
+            return validate_control_shortcuts(default_control_shortcuts(), label_shortcuts)
+        except HTTPException:
+            logger.warning("Default control shortcuts conflict for user %s; using defaults", user_id)
+            return default_control_shortcuts()
+    try:
+        return validate_control_shortcuts({str(k): str(v) for k, v in raw.items()}, label_shortcuts)
+    except HTTPException:
+        logger.warning("Invalid control shortcut settings for user %s; using defaults", user_id)
+        return default_control_shortcuts()
+
+
+def save_user_shortcuts(
+    user_id: str,
+    shortcuts: dict[str, str],
+    control_shortcuts: dict[str, str] | None = None,
+) -> dict[str, dict[str, str]]:
     normalized = validate_shortcuts(shortcuts)
+    normalized_controls = validate_control_shortcuts(
+        control_shortcuts or default_control_shortcuts(),
+        normalized,
+    )
     path = shortcut_settings_path(user_id)
     path.write_text(
-        json.dumps({"user_id": user_id, "shortcuts": normalized}, indent=2),
+        json.dumps(
+            {
+                "user_id": user_id,
+                "shortcuts": normalized,
+                "control_shortcuts": normalized_controls,
+            },
+            indent=2,
+        ),
         encoding="utf-8",
     )
-    return normalized
+    return {"shortcuts": normalized, "control_shortcuts": normalized_controls}
 
 
 def job_seconds_left(deadline_at: float, duration_sec: float) -> int:
@@ -594,6 +678,7 @@ class LoginRequest(BaseModel):
 
 class ShortcutSettingsRequest(BaseModel):
     shortcuts: dict[str, str] = Field(default_factory=dict)
+    control_shortcuts: dict[str, str] | None = None
 
 
 def _auth_token(request: Request) -> str | None:
@@ -2289,16 +2374,21 @@ async def get_annotations(video_id: str, request: Request) -> dict[str, Any]:
 async def get_labels(request: Request) -> dict[str, Any]:
     user_id = _require_user_id(request)
     payload = labels_api_payload()
-    payload["shortcuts"] = load_user_shortcuts(user_id)
+    shortcuts = load_user_shortcuts(user_id)
+    payload["shortcuts"] = shortcuts
+    payload["control_shortcuts"] = load_user_control_shortcuts(user_id, shortcuts)
     return payload
 
 
 @app.get("/api/label-shortcuts")
 async def get_label_shortcuts(request: Request) -> dict[str, Any]:
     user_id = _require_user_id(request)
+    shortcuts = load_user_shortcuts(user_id)
     return {
-        "shortcuts": load_user_shortcuts(user_id),
+        "shortcuts": shortcuts,
         "defaults": default_label_shortcuts(),
+        "control_shortcuts": load_user_control_shortcuts(user_id, shortcuts),
+        "control_defaults": default_control_shortcuts(),
     }
 
 
@@ -2307,9 +2397,12 @@ async def update_label_shortcuts(
     body: ShortcutSettingsRequest, request: Request
 ) -> dict[str, Any]:
     user_id = _require_user_id(request)
+    saved = save_user_shortcuts(user_id, body.shortcuts, body.control_shortcuts)
     return {
-        "shortcuts": save_user_shortcuts(user_id, body.shortcuts),
+        "shortcuts": saved["shortcuts"],
         "defaults": default_label_shortcuts(),
+        "control_shortcuts": saved["control_shortcuts"],
+        "control_defaults": default_control_shortcuts(),
     }
 
 
