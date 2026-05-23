@@ -3,7 +3,8 @@ const DEFAULT_PLAYBACK_RATE = 1;
 const PLAYBACK_RATE_STEP = 0.1;
 const MIN_PLAYBACK_RATE = 0.1;
 const FIRST_PART_EXTRA_SEC = 2;
-const ARROW_FRAME_STEP = 2;
+const ARROW_PLAYING_FRAME_STEP = 12;
+const ARROW_PAUSED_FRAME_STEP = 2;
 const ARROW_HOLD_DELAY_MS = 60;
 const ARROW_HOLD_INTERVAL_MS = 28;
 const API_RESPONSE_FALLBACK_SEC = 26;
@@ -2100,24 +2101,29 @@ function loopAnnotatorVideo() {
 function stepFrame(delta) {
   if (!video.src) return;
   clearSelectedEvent();
+  const wasPlaying = !video.paused;
   const frameTime = 1 / videoFps;
   const { start, end } = playbackLocalBounds();
-  video.pause();
   video.currentTime = Math.min(
     end,
     Math.max(start, video.currentTime + delta * frameTime)
   );
+  if (wasPlaying) video.play().catch(() => {});
   updateVideoHud();
+}
+
+function arrowFrameDelta(dir) {
+  return dir * (video.paused ? ARROW_PAUSED_FRAME_STEP : ARROW_PLAYING_FRAME_STEP);
 }
 
 function startArrowHold(dir) {
   stopArrowHold();
-  stepFrame(dir * ARROW_FRAME_STEP);
+  stepFrame(arrowFrameDelta(dir));
   arrowHoldDir = dir;
   arrowHoldDelay = setTimeout(() => {
     arrowHoldDelay = null;
     arrowHoldTimer = setInterval(
-      () => stepFrame(dir * ARROW_FRAME_STEP),
+      () => stepFrame(arrowFrameDelta(dir)),
       ARROW_HOLD_INTERVAL_MS
     );
   }, ARROW_HOLD_DELAY_MS);
