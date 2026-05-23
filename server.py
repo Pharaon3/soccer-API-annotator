@@ -605,6 +605,7 @@ class ActiveJob:
     rank_by_participant_id: dict[int, int] = field(default_factory=dict)
     dispatch_session_ids: list[int] = field(default_factory=list)
     candidate_frames: list[int] = field(default_factory=list)
+    target_ranks: set[int] | None = None
 
 
 @dataclass
@@ -659,6 +660,8 @@ class TestJobState:
 
 class AnnotateRequest(BaseModel):
     video_url: HttpUrl
+    active_gpu: int | None = Field(default=None, ge=1)
+    task_ids: list[int] | None = None
 
 
 class EventFrameCandidatesRequest(BaseModel):
@@ -1134,6 +1137,16 @@ class ConnectionManager:
         online = self.snapshot_online_annotators()
         if not online:
             return False
+        if job.target_ranks is not None:
+            target_sessions = online[: len(job.target_ranks)]
+            if len(target_sessions) < len(job.target_ranks):
+                return False
+            job.rank_by_participant_id = {
+                session.annotator_id: rank
+                for session, rank in zip(target_sessions, sorted(job.target_ranks))
+            }
+            job.dispatch_session_ids = [s.annotator_id for s in target_sessions]
+            return True
         job.rank_by_participant_id = self.ranks_for_sessions(online)
         job.segment_total = len(online)
         job.dispatch_session_ids = [s.annotator_id for s in online]
@@ -1202,7 +1215,8 @@ class ConnectionManager:
         x = job.segment_total
         video_id = job.video_id
 
-        segment_ranks = [rank for rank in range(2, x + 1)]
+        target_ranks = job.target_ranks or set(job.rank_by_participant_id.values())
+        segment_ranks = sorted(rank for rank in target_ranks if rank > 1)
 
         async def encode_and_notify(rank: int) -> None:
             start, play_end, _, _ = padded_playback_bounds(rank, x)
@@ -1510,6 +1524,34 @@ def active_job_for_candidates(body: EventFrameCandidatesRequest) -> ActiveJob | 
     return max(jobs, key=lambda job: job.started_at)
 
 
+def normalize_requested_task_ids(
+    task_ids: list[int] | None, active_gpu: int | None
+) -> tuple[int | None, set[int] | None]:
+    """External task ids are 0-based; internal annotator ranks are 1-based."""
+    if task_ids is None:
+        return active_gpu, None
+    if active_gpu is None:
+        raise HTTPException(status_code=400, detail="active_gpu is required with task_ids")
+    if not task_ids:
+        raise HTTPException(status_code=400, detail="task_ids must contain at least one task id")
+
+    ranks: set[int] = set()
+    for task_id in task_ids:
+        try:
+            idx = int(task_id)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400, detail="task_ids must contain integer task ids"
+            ) from exc
+        if idx < 0 or idx >= active_gpu:
+            raise HTTPException(
+                status_code=400,
+                detail=f"task_id {idx} is outside active_gpu range 0..{active_gpu - 1}",
+            )
+        ranks.add(idx + 1)
+    return active_gpu, ranks
+
+
 def cache_paths(video_id: str) -> tuple[Path, Path, Path]:
     meta = ANNOTATIONS_DIR / f"{video_id}.meta.json"
     events_file = ANNOTATIONS_DIR / f"{video_id}.json"
@@ -1762,6 +1804,9 @@ async def run_annotate_job(
     video_url: str,
     cancel_event: asyncio.Event | None = None,
     video_ready: asyncio.Event | None = None,
+    *,
+    active_gpu: int | None = None,
+    target_ranks: set[int] | None = None,
 ) -> dict[str, Any]:
     started_at = time.time()
     duration_sec = random_annotate_duration_sec()
@@ -1771,10 +1816,26 @@ async def run_annotate_job(
     _, _, video_path = cache_paths(video_id)
 
     sessions = manager.snapshot_online_annotators()
-    rank_by_id = manager.ranks_for_sessions(sessions)
-    x = len(sessions)
-    if x == 0:
+    if target_ranks is not None:
+        target_sessions = sessions[: len(target_ranks)]
+        rank_by_id = {
+            session.annotator_id: rank
+            for session, rank in zip(target_sessions, sorted(target_ranks))
+        }
+        x = active_gpu or len(sessions)
+    else:
+        rank_by_id = manager.ranks_for_sessions(sessions)
+        x = len(sessions)
+        target_sessions = sessions
+    if not target_sessions:
         logger.warning("Annotate job skipped: no online annotators")
+        return {"predictions": []}
+    if target_ranks is not None and len(target_sessions) < len(target_ranks):
+        logger.warning(
+            "Annotate job skipped: requested ranks=%s but online annotators=%d",
+            sorted(target_ranks),
+            len(sessions),
+        )
         return {"predictions": []}
 
     job = ActiveJob(
@@ -1786,12 +1847,21 @@ async def run_annotate_job(
         duration_sec=duration_sec,
         segment_total=x,
         rank_by_participant_id=rank_by_id,
+        dispatch_session_ids=[s.annotator_id for s in target_sessions],
+        target_ranks=target_ranks,
     )
     active_jobs[job_id] = job
     job_events[job_id] = []
 
-    logger.info("Annotate job %s started video_id=%s annotators=%d", job_id, video_id, x)
-    await manager.notify_annotate_ranks(job, {1})
+    logger.info(
+        "Annotate job %s started video_id=%s annotators=%d target_ranks=%s",
+        job_id,
+        video_id,
+        x,
+        sorted(target_ranks) if target_ranks is not None else "all",
+    )
+    if target_ranks is None or 1 in target_ranks:
+        await manager.notify_annotate_ranks(job, {1})
 
     try:
         return await _run_annotate_job_body(
@@ -1910,10 +1980,25 @@ async def wait_cache_hit_response_delay(request_started_at: float) -> float:
     return target_sec
 
 
-async def run_annotate_with_dedup(video_url: str) -> tuple[dict[str, Any], str | None]:
+async def run_annotate_with_dedup(
+    video_url: str,
+    *,
+    active_gpu: int | None = None,
+    target_ranks: set[int] | None = None,
+) -> tuple[dict[str, Any], str | None]:
     """Run a fresh annotate job; cancel and return cache if duplicate found in parallel."""
     request_started_at = time.time()
     video_id = video_id_from_url(video_url)
+
+    if target_ranks is not None:
+        return (
+            await run_annotate_job(
+                video_url,
+                active_gpu=active_gpu,
+                target_ranks=target_ranks,
+            ),
+            None,
+        )
 
     same_id_payload = lookup_cached_by_video_id(video_id)
     if same_id_payload is not None:
@@ -2165,6 +2250,9 @@ async def annotate(
     if not verify_api_key(x_api_key):
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
     video_url = str(body.video_url)
+    active_gpu, target_ranks = normalize_requested_task_ids(
+        body.task_ids, body.active_gpu
+    )
 
     try:
         video_id_from_url(video_url)
@@ -2173,7 +2261,12 @@ async def annotate(
 
     api_started_at = time.time()
     video_id = video_id_from_url(video_url)
-    logger.info("Annotate API request received url=%s", video_url)
+    logger.info(
+        "Annotate API request received url=%s active_gpu=%s target_ranks=%s",
+        video_url,
+        active_gpu,
+        sorted(target_ranks) if target_ranks is not None else "all",
+    )
     await manager.notify_api_call_started(video_id)
 
     fallback_reason = None
@@ -2197,7 +2290,11 @@ async def annotate(
         return JSONResponse(content=result)
 
     try:
-        result, cache_reason = await run_annotate_with_dedup(video_url)
+        result, cache_reason = await run_annotate_with_dedup(
+            video_url,
+            active_gpu=active_gpu,
+            target_ranks=target_ranks,
+        )
     except httpx.HTTPError as exc:
         logger.exception("Annotate job failed")
         raise HTTPException(status_code=502, detail=f"Request failed: {exc}") from exc
