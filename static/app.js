@@ -3,6 +3,7 @@ const DEFAULT_PLAYBACK_RATE = 1;
 const PLAYBACK_RATE_STEP = 0.1;
 const MIN_PLAYBACK_RATE = 0.1;
 const FIRST_PART_EXTRA_SEC = 2;
+const ARROW_FRAME_STEP = 2;
 const ARROW_HOLD_DELAY_MS = 60;
 const ARROW_HOLD_INTERVAL_MS = 28;
 const API_RESPONSE_FALLBACK_SEC = 26;
@@ -2111,11 +2112,14 @@ function stepFrame(delta) {
 
 function startArrowHold(dir) {
   stopArrowHold();
-  stepFrame(dir);
+  stepFrame(dir * ARROW_FRAME_STEP);
   arrowHoldDir = dir;
   arrowHoldDelay = setTimeout(() => {
     arrowHoldDelay = null;
-    arrowHoldTimer = setInterval(() => stepFrame(dir), ARROW_HOLD_INTERVAL_MS);
+    arrowHoldTimer = setInterval(
+      () => stepFrame(dir * ARROW_FRAME_STEP),
+      ARROW_HOLD_INTERVAL_MS
+    );
   }, ARROW_HOLD_DELAY_MS);
 }
 
