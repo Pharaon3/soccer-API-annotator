@@ -1612,8 +1612,15 @@ async def split_video_segment(src: Path, dest: Path, start: float, duration: flo
         str(src),
         "-t",
         str(duration),
-        "-c",
-        "copy",
+        "-c:v",
+        "libx264",
+        "-preset",
+        SEGMENT_FFMPEG_PRESET,
+        "-crf",
+        str(SEGMENT_CRF),
+        "-vf",
+        f"{SEGMENT_SCALE_FILTER},fps={SEGMENT_FPS}",
+        "-an",
         "-movflags",
         "+faststart",
         str(dest),
@@ -1626,6 +1633,7 @@ async def split_video_segment(src: Path, dest: Path, start: float, duration: flo
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
 
 
 def file_content_hash(path: Path) -> str:
